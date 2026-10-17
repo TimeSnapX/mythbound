@@ -1,74 +1,118 @@
-// Mythbound core game: player controller, Zelda-style combat, skills, building, quest, saves, multiplayer glue.
+// Mythbound core game (v2): player controller, Zelda-style combat, saves + v1 migration, UI wiring, building, multiplayer glue.
+// Big subsystems live in mixins: rpg.js (inventory/equipment/shops/bank), story.js (quests/dialogue), systems.js (bombs, magic, hazards…).
 import * as THREE from 'three';
 import {
-  SPAWN, ENTRANCE, DUNGEON_START, VILLAGE, BLOCK, PIECES, RECIPES, SWORDS, ITEMS, NODE_TYPES, ENEMY_TYPES, SKILL_NAMES,
-  islandHeight, zoneAt, levelForXp, generateEnemySpawns, EnemySim, cellOf, cellCenter, buildRefusal,
+  SPAWN, ENTRANCE, DUNGEON_START, VILLAGE, BLOCK, PIECES, PIECE_ORDER, ITEMS, GEAR, NODE_TYPES, ENEMY_TYPES, SKILLS, SKILL_NAMES,
+  islandHeight, zoneAt, levelForXp, xpForLevel, v1LevelForXp, generateEnemySpawns, EnemySim, cellOf, cellCenter, pieceType, pieceRot,
+  dungeonAt, inWorldBounds, MINE_START, CAMP, SAVE_VERSION, MAX_LEVEL, gatherSpeed, ALTARS, HEARTHSTONES, FADE_ECHO, SPELLS, PETS,
 } from './shared.js';
 import { buildAvatar, animateAvatar, SKINS, HAIR_COLORS, TUNICS, HAIR_STYLES, hex } from './avatar.js';
 import { buildWorld, Particles, makeLabel } from './world.js';
 import { buildDungeon, DUNGEON_SPAWNS, CHECKPOINT, dungeonHeight } from './dungeon.js';
+import { buildRidge } from './ridge.js';
+import { buildMine, MINE_SPAWNS, MINE_CP, mineHeight } from './mine.js';
 import { EnemyView } from './enemies.js';
 import { Building } from './building.js';
 import { Input } from './input.js';
 import { Net } from './net.js';
+import { Audio } from './audio.js';
 import * as UI from './ui.js';
+import { Story, NPC_DEFS } from './story.js';
+import { RPG } from './rpg.js';
+import { Systems } from './systems.js';
 
-const SAVE_KEY = 'mythbound_save_v1';
+const SAVE_KEY = 'mythbound_save_v2', SAVE_KEY_V1 = 'mythbound_save_v1', SETTINGS_KEY = 'mythbound_settings';
 const PR = 0.4, STEP = 0.55, GRAV = 25;
-const QUEST_FLAGS = ['talked', 'entered', 'grapple', 'lever', 'boss', 'shard', 'done'];
-const QUEST_TEXT = [
-  'Speak with Elder Maren in the village square.',
-  'Travel north to the Hollow Barrow and enter it.',
-  'Explore the Barrow. Find a way across the chasm.',
-  'Grapple across the chasm (G / 🪝) and pull the lever.',
-  'Defeat the Barrow Warden. Strike his glowing back, or hit him while he is stunned after a slam.',
-  'Open the Warden\'s chest to claim the Mythstone.',
-  'Return the Mythstone shard to Elder Maren.',
-  'Quest complete! Explore, gather, forge and build. More of the story is coming…',
-];
 const ATK = { attack1: { dur: 0.3, hit: 0.11, mult: 1 }, attack2: { dur: 0.3, hit: 0.11, mult: 1 }, attack3: { dur: 0.42, hit: 0.17, mult: 1.5 } };
 const lerpAngle = (a, b, t) => { let d = b - a; d = Math.atan2(Math.sin(d), Math.cos(d)); return a + d * t; };
 const params = new URLSearchParams(location.search);
+const DEFAULT_SETTINGS = { master: 0.8, music: 0.6, sfx: 0.9, muted: false, quality: 'auto', sens: 1, bigButtons: false, invertY: false };
+
+// v1 save -> v2 save. Nothing is dropped: inventory, flags, builds, position and hearts carry over; XP is re-based so each
+// skill keeps the level it had under the v1 curve (capped at 50); the sword becomes an equipped weapon item.
+export function migrateSave(old) {
+  if (!old || typeof old !== 'object') return null;
+  if (old.v >= 2) return old;
+  const s = defaultSave();
+  s.name = old.name || ''; s.look = { ...s.look, ...(old.look || {}) };
+  s.inv = { ...(old.inv || {}) }; s.flags = { ...(old.flags || {}) };
+  s.pos = old.pos || null; s.hp = old.hp || 6; s.maxHearts = old.maxHearts || 3;
+  s.blocks = Array.isArray(old.blocks) ? old.blocks : [];
+  s.migratedFrom = { v: old.v || 1, levels: {} };
+  for (const [k, xp] of Object.entries(old.xp || {})) {
+    const L = Math.min(MAX_LEVEL, v1LevelForXp(xp || 0)); s.xp[k] = xpForLevel(L); s.migratedFrom.levels[k] = L;
+  }
+  const sw = old.sword && GEAR[old.sword + '_sword'] ? old.sword + '_sword' : 'wood_sword';
+  s.equip.weapon = sw;
+  return s;
+}
+export function defaultSave() {
+  const xp = {}; for (const k of SKILLS) xp[k] = 0;
+  return { v: SAVE_VERSION, name: '', look: { skin: 0, hair: 0, hairColor: 1, tunic: 0 }, inv: {}, gold: 0, xp, sword: 'wood',
+    equip: { weapon: 'wood_sword', shield: 'driftwood_shield', ranged: null, head: null, body: null, legs: null, cape: null },
+    enchant: {}, flags: {}, pos: null, hp: 6, maxHearts: 3, blocks: [], doors: [], bank: {}, chests: {}, home: { plot: null, hearth: null },
+    pet: null, spell: 'wind_bolt', quick: null, capes: [], fade: 0, totalShown: 0 };
+}
 
 export class Game {
   constructor() {
     this.canvas = document.getElementById('c');
+    this.settings = { ...DEFAULT_SETTINGS }; try { Object.assign(this.settings, JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}); } catch {}
     this.touch = params.has('touch') ? params.get('touch') !== '0' : (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window);
-    const quality = params.get('gfx') || (this.touch ? 'low' : 'high');
+    const quality = params.get('gfx') || (this.settings.quality !== 'auto' ? this.settings.quality : this.touch ? 'low' : 'high');
+    this.quality = quality;
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: quality === 'high', powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(params.has('scale') ? +params.get('scale') : Math.min(devicePixelRatio, quality === 'high' ? 2 : 1.25));
     this.renderer.shadowMap.enabled = quality === 'high'; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 420);
     this.world = buildWorld(this.scene, { shadows: quality === 'high' });
+    this.ridge = buildRidge(this.scene, this.world, { shadows: quality === 'high' });
     this.dungeon = buildDungeon(this.scene);
+    this.mine = buildMine(this.scene); this.mine.group.visible = false;
     this.particles = new Particles(this.scene);
     this.building = new Building(this.scene);
+    this.audio = new Audio(this.settings);
     this.input = new Input(this.canvas);
     this.input.noPointerLock = params.has('nolock');
     if (this.touch) { document.body.classList.add('touch'); UI.show('#touch'); this.input.attachTouch(document.getElementById('touch')); }
+    document.body.classList.toggle('bigbtn', !!this.settings.bigButtons);
     this.clock = new THREE.Clock(); this.t = 0;
+    this.rng = Math.random; this.rand = () => this.rng();
     this.todOverride = params.has('tod') ? +params.get('tod') : null;
     this.cam = { yaw: 0, pitch: 0.38, dist: 7.5, pos: new THREE.Vector3(0, 20, 40) };
     this.views = new Map(); this.remotes = new Map(); this.netEnemies = new Map();
     this.hitSeen = new Map(); this.enemySpawnType = new Map(generateEnemySpawns().map((s) => [s.id, s.type]));
-    this.phase = 'create'; this.buildMode = false; this.piece = 'wood'; this.dialogQ = null; this.messages = [];
+    this.phase = 'create'; this.buildMode = false; this.piece = 'wood'; this.rot = 0; this.messages = [];
     this.localSim = new EnemySim(generateEnemySpawns());
+    this.msim = new EnemySim([]);
     this.player = buildAvatar(); this.scene.add(this.player.root);
     this.p = { x: SPAWN.x, y: 4, z: SPAWN.z, vy: 0, ry: Math.PI, mode: 'normal', mt: 0, combo: 0, queued: false, stam: 100, stamT: 9, hp: 6, inv: 0, lock: null, grounded: true, speed: 0, hitDone: false, kx: 0, kz: 0 };
     this.addFx();
     this.spawnNPCs();
+    this.buildSystems();
     this.load();
     this.resize(); addEventListener('resize', () => this.resize());
     this.bindUI();
     addEventListener('beforeunload', () => this.save());
     setInterval(() => this.phase === 'play' && this.save(), 5000);
     window.MB = this; // test / debug hook
+    const self = this;
     this.debug = {
-      teleport: (x, z, y) => { this.p.x = x; this.p.z = z; this.p.y = y ?? this.groundAt(x, z, 999); this.p.vy = 0; this.tpFlag = true; },
-      give: (item, n = 1) => { this.s.inv[item] = (this.s.inv[item] || 0) + n; },
-      flag: (f, v = true) => { this.s.flags[f] = v; this.dungeon.setState(this.dstate()); },
+      teleport: (x, z, y) => { this.p.x = x; this.p.z = z; this.p.y = y ?? this.groundAt(x, z, 999); this.p.vy = 0; this.tpFlag = true; this.p.safe = { x, z }; },
+      give: (item, n = 1) => { if (item === 'gold' || item === 'coins') this.s.gold += n; else this.s.inv[item] = (this.s.inv[item] || 0) + n; },
+      gold: (n) => (this.s.gold += n),
+      flag: (f, v = true) => { this.s.flags[f] = v; this.applyWorldState(); },
+      flags: (list) => { for (const f of list) this.s.flags[f] = true; this.applyWorldState(); },
       tod: (v) => (this.todOverride = v),
+      setLevel: (skill, L) => { const b = this.level(skill); this.s.xp[skill] = xpForLevel(L); if (L > b) this.onLevelUp(skill, b, L); this.updateNameTag(); },
+      maxSkill: (skill = 'combat') => self.debug.setLevel(skill, MAX_LEVEL),
+      maxAll: () => { for (const k of SKILLS) self.debug.setLevel(k, MAX_LEVEL); },
+      seed: (n) => { let a = n; this.rng = () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; },
+      pet: (type, name) => this.adoptPet(type, name),
+      gemBoost: (k) => (this.debugGemBoost = k),
+      heal: () => (this.p.hp = this.maxHp),
+      god: (on = true) => (this.god = on),
     };
   }
 
@@ -82,19 +126,18 @@ export class Game {
     this.chain.visible = false; this.scene.add(this.chain);
     this.hook = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.35, 4).rotateX(Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0xc0c4cc, flatShading: true }));
     this.hook.visible = false; this.scene.add(this.hook);
+    this.beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 40, 6, 1, true), new THREE.MeshBasicMaterial({ color: 0xffd040, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
+    this.beacon.visible = false; this.scene.add(this.beacon);
   }
   spawnNPCs() {
-    const defs = [
-      { id: 'elder', name: 'Elder Maren', x: 0, z: 1.5, look: { skin: 0, hair: 1, hairColor: 4, tunic: 3 }, ry: 0 },
-      { id: 'smith', name: 'Bram the Smith', x: -13, z: 13.5, look: { skin: 3, hair: 3, hairColor: 0, tunic: 5 }, ry: 2.4 },
-      { id: 'pip', name: 'Pip the Builder', x: 7, z: 30, look: { skin: 1, hair: 2, hairColor: 2, tunic: 4 }, ry: Math.PI },
-    ];
-    this.npcs = defs.map((d) => {
-      const av = buildAvatar(d.look); av.root.position.set(d.x, islandHeight(d.x, d.z), d.z); av.root.rotation.y = d.ry; this.scene.add(av.root);
-      const label = makeLabel(d.name, '#ffe9a8', 0.85); label.position.set(d.x, islandHeight(d.x, d.z) + 2.4, d.z); this.scene.add(label);
-      const mark = makeLabel('!', '#ffd040', 1.6); mark.position.set(d.x, islandHeight(d.x, d.z) + 3.1, d.z); mark.visible = false; this.scene.add(mark);
+    this.npcs = NPC_DEFS.map((d) => {
+      const y = islandHeight(d.x, d.z);
+      const av = buildAvatar(d.look); av.root.position.set(d.x, y, d.z); av.root.rotation.y = d.ry; this.scene.add(av.root);
+      const label = makeLabel(d.name, '#ffe9a8', 0.85); label.position.set(d.x, y + 2.4, d.z); this.scene.add(label);
+      const mark = makeLabel('!', '#ffd040', 1.6); mark.position.set(d.x, y + 3.1, d.z); mark.visible = false; this.scene.add(mark);
+      const qmark = makeLabel('?', '#80e0ff', 1.6); qmark.position.copy(mark.position); qmark.visible = false; this.scene.add(qmark);
       this.world.colliders.push({ c: 1, x: d.x, z: d.z, r: 0.5 });
-      return { ...d, av, mark };
+      return { ...d, av, mark, qmark, y, ry0: d.ry, phase: Math.random() * 10 };
     });
   }
   resize() {
@@ -103,24 +146,40 @@ export class Game {
   }
 
   // ---------------- save / load ----------------
-  defaultSave() { return { v: 1, name: '', look: { skin: 0, hair: 0, hairColor: 1, tunic: 0 }, inv: {}, xp: { combat: 0, woodcutting: 0, mining: 0, smithing: 0 }, sword: 'wood', flags: {}, pos: null, hp: 6, maxHearts: 3, blocks: [], dungeon: {} }; }
+  defaultSave() { return defaultSave(); }
   load() {
-    let s = null; try { s = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch {}
+    let s = null, from = null;
+    try { s = JSON.parse(localStorage.getItem(SAVE_KEY)); } catch {}
+    if (!s) { try { const o = JSON.parse(localStorage.getItem(SAVE_KEY_V1)); if (o && o.name) { s = migrateSave(o); from = 1; } } catch {} }
     this.hasSave = !!(s && s.name);
-    this.s = Object.assign(this.defaultSave(), s || {});
+    const d = defaultSave();
+    this.s = Object.assign(d, s || {});
+    this.s.xp = Object.assign(defaultSave().xp, this.s.xp || {}); this.s.equip = Object.assign(defaultSave().equip, this.s.equip || {});
+    this.s.home ||= { plot: null, hearth: null }; this.s.capes ||= []; this.s.bank ||= {}; this.s.chests ||= {}; this.s.enchant ||= {};
+    this.migrated = from;
   }
   save() {
-    if (!this.s.name) return;
+    if (!this.s.name || this.phase !== 'play') return;
     const inD = zoneAt(this.p.x, this.p.z) === 'dungeon';
-    this.s.pos = inD ? { x: ENTRANCE.x, z: ENTRANCE.z + 5 } : { x: +this.p.x.toFixed(2), z: +this.p.z.toFixed(2) };
-    this.s.hp = this.p.hp;
-    if (!this.online) this.s.blocks = this.building.serialize();
+    if (inD) this.s.pos = this.dungeonId === 'mine' ? { x: this.ridge.mineEntrance.x - 4, z: this.ridge.mineEntrance.z } : { x: ENTRANCE.x, z: ENTRANCE.z + 5 };
+    else this.s.pos = { x: +this.p.x.toFixed(2), z: +this.p.z.toFixed(2) };
+    this.s.hp = this.p.hp; this.s.v = SAVE_VERSION;
+    if (!this.online) { this.s.blocks = this.building.serialize(); this.s.doors = [...this.building.open]; }
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.s)); } catch {}
   }
-  get maxHp() { return (this.s.maxHearts + Math.floor((levelForXp(this.s.xp.combat) - 1) / 3)) * 2; }
+  saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch {} this.audio.apply(); document.body.classList.toggle('bigbtn', !!this.settings.bigButtons); }
+  get maxHp() { return Math.min(20, this.s.maxHearts + Math.floor((this.level('combat') - 1) / 3)) * 2; }
   level(skill) { return levelForXp(this.s.xp[skill] || 0); }
   dstate() { const f = this.s.flags; return { chest: f.grapple, lever: f.lever, boss: f.boss, bossChest: f.shard }; }
-  questStage() { return QUEST_FLAGS.findIndex((f) => !this.s.flags[f]) === -1 ? 7 : QUEST_FLAGS.findIndex((f) => !this.s.flags[f]); }
+  applyWorldState() {
+    const f = this.s.flags;
+    this.dungeon.setState(this.dstate()); this.mine.setState(f);
+    for (const h of HEARTHSTONES) if (h.flag) this.ridge.setHearthLit(h.id, !!f[h.flag]);
+    for (const fp of this.ridge.fog.values()) this.ridge.setFogCleared(fp.id, this.fogCleared(fp));
+    for (const s of this.ridge.secrets.values()) this.ridge.setSecret(s.id, !!f[s.id + '_b'], !!f[s.id + '_o']);
+    UI.show('#t-grapple', !!f.grapple); UI.show('#t-bomb', !!f.q3_bombs || (this.s.inv.bomb > 0));
+    UI.show('#t-bow', !!this.s.equip.ranged); UI.show('#t-spell', this.level('magic') > 1 || Object.keys(this.s.inv).some((k) => ITEMS[k]?.rune));
+  }
 
   // ---------------- character creation ----------------
   showCreate() {
@@ -132,7 +191,7 @@ export class Game {
       list.forEach((c, i) => {
         const b = document.createElement('button'); if (isText) { b.textContent = c; b.className = 'txt'; } else b.style.background = hex(c);
         b.dataset.i = i; b.setAttribute('aria-label', `${key} ${i}`);
-        b.onclick = () => { L[key] = i; refresh(); }; box.appendChild(b);
+        b.onclick = () => { L[key] = i; refresh(); this.audio.play('ui'); }; box.appendChild(b);
       });
     };
     const refresh = () => {
@@ -145,11 +204,11 @@ export class Game {
     document.getElementById('cc-random').onclick = () => { L.skin = (Math.random() * SKINS.length) | 0; L.hair = (Math.random() * 3) | 0; L.hairColor = (Math.random() * HAIR_COLORS.length) | 0; L.tunic = (Math.random() * TUNICS.length) | 0; if (!nameEl.value) nameEl.value = ['Kael', 'Lyra', 'Bren', 'Ysolde', 'Tamsin', 'Orin'][(Math.random() * 6) | 0]; refresh(); };
     document.getElementById('cc-start').onclick = () => {
       const n = nameEl.value.trim().slice(0, 16); if (!n) return;
-      this.s = this.defaultSave(); this.s.name = n; this.s.look = { ...L }; this.start(true);
+      this.s = defaultSave(); this.s.name = n; this.s.look = { ...L }; this.start(true);
     };
     document.getElementById('cc-new-btn').onclick = () => { UI.show('#cc-continue', false); UI.show('#cc-form'); this.hasSave = false; nameEl.value = ''; refresh(); nameEl.focus(); };
     document.getElementById('cc-cont-btn').onclick = () => this.start(false);
-    document.getElementById('cc-mode').textContent = this.serverUrl ? `Server: ${this.serverUrl}` : 'Single player · progress saves on this device. Multiplayer coming soon.';
+    document.getElementById('cc-mode').textContent = this.serverUrl ? `Server: ${this.serverUrl}` : 'Single player · progress saves on this device.';
     this.player.setLook({ ...L, sword: this.s.sword });
     refresh();
     this.p.x = 3; this.p.z = 24; this.p.y = islandHeight(3, 24); this.p.ry = 0.5;
@@ -158,21 +217,21 @@ export class Game {
   async start(fresh) {
     UI.show('#create', false); UI.show('#hud');
     this.player.setLook({ ...this.s.look, sword: this.s.sword });
+    this.phase = 'play';
+    this.applyGear();
     const pos = this.s.pos || SPAWN;
     this.p.x = pos.x; this.p.z = pos.z; this.p.y = this.groundAt(pos.x, pos.z, 999); this.p.ry = Math.PI; this.cam.yaw = 0;
     this.p.hp = Math.min(this.maxHp, this.s.hp || this.maxHp);
-    if (!this.online) { this.building.clear(); for (const [k, arr] of this.s.blocks || []) this.building.setStack(k, arr); }
-    this.dungeon.setState(this.dstate());
-    this.resetDungeonSim();
-    UI.show('#t-grapple', !!this.s.flags.grapple);
-    this.phase = 'play';
+    if (!this.online) { this.building.clear(); for (const [k, arr] of this.s.blocks || []) this.building.setStack(k, arr); for (const key of this.s.doors || []) { const [k, i] = key.split('#'); if (this.building.stacks.get(k)) this.building.toggleDoor(k, +i); } }
+    this.applyWorldState(); this.resetDungeonSim(); this.resetMineSim();
+    this.spawnPet(); this.drawPlot(); this.updateNameTag();
     UI.chatLine(null, `Welcome to Mythbound, ${this.s.name}! Press H for controls.`, 'sys');
-    if (fresh) setTimeout(() => UI.banner('Mythbound', 'Speak with Elder Maren to begin'), 400);
+    if (this.migrated) { UI.chatLine(null, 'Your v1 save was upgraded to v2: items, builds, quest progress and skill levels were kept.', 'sys'); setTimeout(() => UI.banner('Welcome back!', 'Your legend continues in Mythbound v2'), 600); }
+    else if (fresh) setTimeout(() => UI.banner('Mythbound', 'Speak with Elder Maren to begin'), 400);
     if (this.serverUrl) await this.connect();
     else UI.netBadge('Solo · offline', 'offline');
     this.save();
   }
-
   // ---------------- networking ----------------
   async connect() {
     UI.netBadge('Connecting…', 'warn');
@@ -237,13 +296,41 @@ export class Game {
 
   // ---------------- UI wiring ----------------
   bindUI() {
-    document.getElementById('btn-skills').onclick = () => this.togglePanel('skills');
-    document.getElementById('btn-bag').onclick = () => this.togglePanel('bag');
-    document.getElementById('btn-help').onclick = () => this.togglePanel('help');
-    document.getElementById('panel').addEventListener('click', (e) => {
-      if (e.target.closest('[data-close]')) return this.closePanel();
-      const r = e.target.closest('[data-recipe]'); if (r) this.craft(r.dataset.recipe);
+    const on = (id, kind) => (document.getElementById(id).onclick = () => { this.audio.play('ui'); this.togglePanel(kind); });
+    on('btn-skills', 'skills'); on('btn-bag', 'bag'); on('btn-help', 'help'); on('btn-journal', 'journal'); on('btn-spells', 'spells'); on('btn-settings', 'settings');
+    const panel = document.getElementById('panel');
+    panel.addEventListener('click', (e) => {
+      const q = (sel) => e.target.closest(sel);
+      let b;
+      if (q('[data-close]')) return this.closePanel();
+      if ((b = q('[data-recipe]'))) return this.craft(b.dataset.recipe);
+      if ((b = q('[data-open]'))) return this.openPanel(b.dataset.open);
+      if ((b = q('[data-cape]'))) { this.setCape(b.dataset.cape || null); return this.openPanel('capes'); }
+      if ((b = q('[data-item]'))) { const k = b.dataset.item; if (this.panelKind === 'bag') { document.getElementById('itemmenu').innerHTML = UI.itemMenuHtml(this, k); } return; }
+      if ((b = q('[data-act-item]'))) { const k = b.dataset.k, a = b.dataset.actItem; if (a === 'equip') this.equip(k); if (a === 'eat') this.eat(k); if (a === 'quick') { this.s.quick = k; UI.toast(`Quick-slot: ${ITEMS[k].name}`, ''); } if (a === 'drop') { this.s.inv[k]--; if (!this.s.inv[k]) delete this.s.inv[k]; this.dropLoot(this.p.x + Math.sin(this.p.ry), this.p.y, this.p.z + Math.cos(this.p.ry), k, 1).t = -2; } this.applyWorldState(); this.save(); return this.openPanel('bag'); }
+      if ((b = q('[data-unequip]'))) { if (b.dataset.unequip) { this.unequip(b.dataset.unequip); this.save(); this.openPanel('bag'); } return; }
+      const shop = this.panelKind?.startsWith('shop:') && this.panelKind.slice(5);
+      if ((b = q('[data-buy]'))) return this.buy(shop, b.dataset.buy);
+      if ((b = q('[data-sell]'))) return this.sell(shop, b.dataset.sell, e.shiftKey);
+      if (q('[data-sellall]')) { this.sellJunk(shop); return this.openPanel(this.panelKind); }
+      if ((b = q('[data-deposit]'))) { this.bankDeposit(b.dataset.deposit); this.save(); return this.openPanel('bank'); }
+      if ((b = q('[data-withdraw]'))) { this.bankWithdraw(b.dataset.withdraw, e.shiftKey ? Infinity : 1); this.save(); return this.openPanel('bank'); }
+      if (q('[data-depositall]')) { this.bankDepositAll(); this.save(); return this.openPanel('bank'); }
+      if (q('[data-withdrawall]')) { this.bankWithdrawAll(); this.save(); return this.openPanel('bank'); }
+      const ck = this.panelKind?.startsWith('chest:') && this.panelKind.slice(6);
+      if ((b = q('[data-cdeposit]'))) { this.chestMove(ck, b.dataset.cdeposit, true); this.save(); return this.openPanel(this.panelKind); }
+      if ((b = q('[data-cwithdraw]'))) { this.chestMove(ck, b.dataset.cwithdraw, false); this.save(); return this.openPanel(this.panelKind); }
+      if ((b = q('[data-spell]'))) { const sp = SPELLS.find((x) => x.id === b.dataset.spell); if (sp && this.level('magic') >= sp.level) { this.s.spell = sp.id; UI.show('#t-spell', true); } else UI.toast(`Requires Magic level ${sp.level}.`, 'bad'); return this.openPanel('spells'); }
+      if ((b = q('[data-bind]'))) return this.bindRunes(b.dataset.bind);
+      if ((b = q('[data-petname]'))) return this.adoptPet(b.dataset.petname, document.getElementById('pet-name').value.trim());
     });
+    panel.addEventListener('input', (e) => {
+      const t = e.target;
+      if (t.id === 'bank-q') { const v = t.value; this.openPanel('bank', v); const n = document.getElementById('bank-q'); n.focus(); n.setSelectionRange(v.length, v.length); return; }
+      if (t.dataset.set) { const k = t.dataset.set; this.settings[k] = t.type === 'checkbox' ? t.checked : t.tagName === 'SELECT' ? t.value : +t.value; const o = t.parentElement.querySelector('output'); if (o) o.textContent = k === 'sens' ? this.settings[k] + '×' : Math.round(this.settings[k] * 100) + '%'; this.saveSettings(); }
+    });
+    panel.addEventListener('change', (e) => { const t = e.target; if (t.dataset.set && (t.type === 'checkbox' || t.tagName === 'SELECT')) { this.settings[t.dataset.set] = t.type === 'checkbox' ? t.checked : t.value; this.saveSettings(); } });
+    panel.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' && e.target.id === 'pet-name') panel.querySelector('[data-petname]')?.click(); if (e.key === 'Escape') this.closePanel(); });
     document.getElementById('buildbar').addEventListener('click', (e) => { const s = e.target.closest('[data-piece]'); if (s) { this.piece = s.dataset.piece; this.refreshBuildBar(); } });
     const ci = document.getElementById('chat-input');
     ci.addEventListener('keydown', (e) => {
@@ -257,51 +344,48 @@ export class Game {
     else { UI.chatLine(this.s.name, text, 'me'); UI.chatLine(null, '(Solo mode — nobody else can hear you.)', 'sys'); }
   }
   togglePanel(kind) { if (this.panelKind === kind && UI.panelOpen()) return this.closePanel(); this.openPanel(kind); }
-  openPanel(kind) {
+  openPanel(kind, arg) {
     this.panelKind = kind;
-    if (kind === 'skills') UI.panel(UI.skillsHtml(this.s.xp));
-    else if (kind === 'bag') UI.panel(UI.bagHtml(this.s.inv, this.s.sword, this.s.flags.grapple));
-    else if (kind === 'help') UI.panel(UI.HELP_HTML);
-    else UI.panel(UI.stationHtml(kind, this.s.inv, this.level('smithing')));
+    if (kind === 'skills') UI.panel(UI.skillsHtml(this), 'wide');
+    else if (kind === 'bag') UI.panel(UI.bagHtml(this), 'wide');
+    else if (kind === 'help') UI.panel(UI.HELP_HTML, 'wide');
+    else if (kind === 'journal') UI.panel(UI.journalHtml(this));
+    else if (kind === 'settings') UI.panel(UI.settingsHtml(this.settings));
+    else if (kind === 'spells') UI.panel(UI.spellsHtml(this));
+    else if (kind === 'capes') UI.panel(UI.capesHtml(this));
+    else if (kind === 'bank') UI.panel(UI.bankHtml(this, arg || ''), 'wide');
+    else if (kind.startsWith('shop:')) UI.panel(UI.shopHtml(this, kind.slice(5)), 'wide');
+    else if (kind.startsWith('chest:')) UI.panel(UI.chestHtml(this, kind.slice(6)), 'wide');
+    else if (kind.startsWith('altar:')) UI.panel(UI.altarHtml(this, ALTARS.find((a) => a.id === kind.slice(6))));
+    else UI.panel(UI.stationHtml(this, kind), 'wide');
     if (document.pointerLockElement) document.exitPointerLock();
   }
   closePanel() { UI.panel(null); this.panelKind = null; }
-  refreshBuildBar() { UI.buildBar(this.buildMode, this.piece, this.s.inv); }
+  refreshBuildBar() {
+    const pl = this.s.home?.plot;
+    UI.buildBar(this.buildMode, this.piece, this.rot, this.s.inv, pl ? `🏠 Home plot claimed${this.s.home.hearth ? ' · Hearthstone set' : ' · build a Hearthstone on it to respawn there'}` : `No home plot yet — press P / 🏠 to claim one here (${100} coins). 🪙 ${this.s.gold}`);
+  }
 
-  // ---------------- skills / items ----------------
+  // ---------------- skills ----------------
   addXp(skill, n) {
-    const before = this.level(skill); this.s.xp[skill] = (this.s.xp[skill] || 0) + n;
+    if (!n) return;
+    const before = this.level(skill); this.s.xp[skill] = Math.min(xpForLevel(MAX_LEVEL) * 2, (this.s.xp[skill] || 0) + n);
     UI.toast(`+${n} ${SKILL_NAMES[skill]} XP`, 'xp');
     const after = this.level(skill);
     if (after > before) {
-      UI.banner(`${SKILL_NAMES[skill]} level ${after}!`, skill === 'combat' && after % 3 === 1 ? 'Your heart grows stronger (+1 heart)' : 'Level up!');
-      this.particles.burst(this.p.x, this.p.y + 1.5, this.p.z, 0xffd040, 24, 5, 1);
+      const heart = skill === 'combat' && Math.floor((after - 1) / 3) > Math.floor((before - 1) / 3) && this.maxHp < 40;
+      UI.banner(`${SKILL_NAMES[skill]} level ${after}!`, heart ? 'Your heart grows stronger (+1 heart)' : 'Level up!');
+      this.particles.burst(this.p.x, this.p.y + 1.5, this.p.z, 0xffd040, 24, 5, 1); this.audio.play('level');
       if (skill === 'combat') this.p.hp = this.maxHp;
+      this.onLevelUp(skill, before, after);
+      if (skill === 'magic') UI.show('#t-spell', true);
     }
   }
-  give(item, n) { this.s.inv[item] = (this.s.inv[item] || 0) + n; UI.toast(`+${n} ${ITEMS[item].icon} ${ITEMS[item].name}`, 'item'); }
-  has(cost) { return Object.entries(cost).every(([k, n]) => (this.s.inv[k] || 0) >= n); }
-  spend(cost) { for (const [k, n] of Object.entries(cost)) this.s.inv[k] -= n; }
-  craft(id) {
-    const r = RECIPES.find((x) => x.id === id); if (!r) return;
-    if (this.level('smithing') < r.level) return UI.toast(`Requires Smithing level ${r.level}.`, 'bad');
-    if (!this.has(r.input)) return UI.toast('You do not have the materials.', 'bad');
-    this.spend(r.input);
-    if (r.out) for (const [k, n] of Object.entries(r.out)) this.give(k, n);
-    if (r.sword) {
-      const better = SWORDS[r.sword].dmg > SWORDS[this.s.sword].dmg;
-      if (better) { this.s.sword = r.sword; this.player.setSword(r.sword); }
-      UI.banner(`Forged a ${SWORDS[r.sword].name}!`, better ? `Equipped · damage ${SWORDS[r.sword].dmg}` : '');
-    }
-    this.addXp('smithing', r.xp);
-    const st = this.world.stations.find((s) => s.kind === r.station);
-    this.particles.burst(st.obj.position.x, st.obj.position.y + 1.2, st.obj.position.z, r.station === 'furnace' ? 0xff8a20 : 0xffe080, 14, 3, 0.6);
-    this.openPanel(r.station); this.save();
-  }
-
   // ---------------- terrain / collision ----------------
   get inDungeon() { return zoneAt(this.p.x, this.p.z) === 'dungeon'; }
-  terrainH(x, z) { return zoneAt(x, z) === 'dungeon' ? dungeonHeight(x, z) : islandHeight(x, z); }
+  get dungeonId() { return this.inDungeon ? dungeonAt(this.p.x) : null; }
+  get D() { return this.dungeonId === 'mine' ? this.mine : this.dungeon; }
+  terrainH(x, z) { return zoneAt(x, z) === 'dungeon' ? (dungeonAt(x) === 'mine' ? mineHeight(x, z) : dungeonHeight(x, z)) : islandHeight(x, z); }
   groundAt(x, z, feetY) {
     let g = this.terrainH(x, z);
     if (zoneAt(x, z) !== 'dungeon') for (const c of this.building.columnsAround(x, z, PR * 0.6)) if (c.top <= feetY + STEP && c.top > g) g = c.top;
@@ -309,7 +393,7 @@ export class Game {
   }
   collide(nx, nz, moving) {
     const p = this.p; const inD = zoneAt(nx, nz) === 'dungeon';
-    const list = inD ? this.dungeon.colliders : this.world.colliders;
+    const list = inD ? (dungeonAt(nx) === 'mine' ? this.mine.colliders : this.dungeon.colliders) : this.world.colliders;
     for (let iter = 0; iter < 2; iter++) {
       for (const c of list) {
         if (c.disabled) continue;
@@ -342,7 +426,7 @@ export class Game {
         }
       }
       if (islandHeight(nx, nz) < -1.2) { nx = p.x; nz = p.z; }
-      if (Math.hypot(nx, nz) > 160) { nx = p.x; nz = p.z; }
+      if (!inWorldBounds(nx, nz)) { nx = p.x; nz = p.z; }
     }
     p.x = nx; p.z = nz;
     if (step && moving && p.grounded) { p.vy = 9; p.grounded = false; }
@@ -354,38 +438,56 @@ export class Game {
     this.dsim = new EnemySim(spawns, { height: dungeonHeight, blocked: (x, z) => this.dungeon.blocked(x, z), respawn: false });
     for (const [id, v] of this.views) if (id.startsWith('d_')) { v.dispose(); this.views.delete(id); }
   }
+  resetMineSim() {
+    const spawns = MINE_SPAWNS.filter((s) => !(s.id === 'm_magmaw' && this.s.flags.q3_boss));
+    this.msim = new EnemySim(spawns, { height: mineHeight, blocked: (x, z) => this.mine.blocked(x, z), respawn: false });
+    for (const [id, v] of this.views) if (id.startsWith('m_')) { v.dispose(); this.views.delete(id); }
+  }
   overworldEnemies() { return this.online ? this.netEnemies : this.localSim.enemies; }
-  allEnemies() { const out = []; for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); return out; }
-  enemyById(id) { return id.startsWith('d_') ? this.dsim.enemies.get(id) : this.overworldEnemies().get(id); }
+  allEnemies() { const out = []; for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); for (const e of this.msim.enemies.values()) out.push(e); return out; }
+  enemyById(id) { return id.startsWith('d_') ? this.dsim.enemies.get(id) : id.startsWith('m_') ? this.msim.enemies.get(id) : this.overworldEnemies().get(id); }
   updateEnemies(dt) {
     const me = [{ id: 'me', x: this.p.x, z: this.p.z, dead: this.p.mode === 'dead' }];
     if (!this.online) for (const ev of this.localSim.update(dt, me)) this.handleEnemyEvent(ev);
     else for (const e of this.netEnemies.values()) e.st += dt;
-    if (this.inDungeon) for (const ev of this.dsim.update(dt, me)) this.handleEnemyEvent(ev);
+    if (this.dungeonId === 'barrow') for (const ev of this.dsim.update(dt, me)) this.handleEnemyEvent(ev);
+    if (this.dungeonId === 'mine') for (const ev of this.msim.update(dt, me)) this.handleEnemyEvent(ev);
     for (const e of this.allEnemies()) {
       let v = this.views.get(e.id);
       if (!v) { v = new EnemyView(this.scene, e); this.views.set(e.id, v); }
       const far = Math.abs(e.x - this.p.x) + Math.abs(e.z - this.p.z) > 110;
-      v.root.visible = !far; if (far) { v.ring.visible = false; continue; }
+      v.root.visible = !far; if (far) { v.ring.visible = false; if (v.lane) v.lane.visible = false; continue; }
       v.update(e, dt, this.t, (x, z) => this.terrainH(x, z), this.camera, this.p.lock && this.p.lock.id === e.id);
     }
+    // fireballs from Cinder Imps
+    this.fireballs ||= new Map();
+    const live = new Set();
+    for (const sim of [this.localSim, this.msim]) for (const q of sim.proj) {
+      live.add(q.n + ':' + q.id);
+      let m = this.fireballs.get(q.n + ':' + q.id);
+      if (!m) { m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 0), new THREE.MeshBasicMaterial({ color: 0xff6a10 })); this.scene.add(m); this.fireballs.set(q.n + ':' + q.id, m); }
+      m.position.set(q.x, this.terrainH(q.x, q.z) + 1.2, q.z); m.rotation.y += dt * 8;
+    }
+    for (const [k, m] of this.fireballs) if (!live.has(k)) { this.scene.remove(m); this.fireballs.delete(k); }
   }
   handleEnemyEvent(ev) {
+    if (ev.t === 'fire') this.audio.play('fire');
+    if (ev.t === 'roar') { this.audio.play('roar'); UI.banner('Magmaw, the Furnace Worm', 'Bomb its open maw!', 'boss'); }
+    if (ev.t === 'phase') { this.shake = 0.5; this.audio.play('roar'); UI.toast(ev.phase === 3 ? 'Magmaw is enraged — the ground erupts beneath you!' : 'Magmaw thrashes and dives deeper…', 'bad'); }
     if (ev.t !== 'hit') return;
     const p = this.p;
     if (p.mode === 'dead') return;
     const key = ev.id; if (this.hitSeen.get(key) === ev.atk) return;
     const d = Math.hypot(p.x - ev.x, p.z - ev.z);
-    if (ev.slam) { this.particles.burst(ev.x, this.terrainH(ev.x, ev.z) + 0.2, ev.z, 0x8a8070, 18, 5, 0.6); this.shake = 0.35; }
+    if (ev.slam || ev.erupt) { this.particles.burst(ev.x, this.terrainH(ev.x, ev.z) + 0.2, ev.z, ev.erupt ? 0xff6020 : 0x8a8070, 18, 5, 0.6); this.shake = 0.35; }
     if (d > ev.r + PR) return;
     this.hitSeen.set(key, ev.atk);
     if (p.mode === 'roll' && p.mt > 0.03 && p.mt < 0.42) { this.lastDodge = this.t; return; } // i-frames
     if (p.inv > 0) return;
-    // shield block: facing the attacker
     const ax = ev.sx - p.x, az = ev.sz - p.z, al = Math.hypot(ax, az) || 1;
     const facing = Math.sin(p.ry) * (ax / al) + Math.cos(p.ry) * (az / al);
-    if (p.mode === 'block' && facing > 0.3 && p.stam > 0) {
-      this.useStam(12 * ev.dmg); this.lastBlock = this.t;
+    if (p.mode === 'block' && facing > 0.3 && p.stam > 0 && !ev.unblockable) {
+      this.useStam(12 * ev.dmg * (1 - Math.min(0.5, this.stats().def * 0.04))); this.lastBlock = this.t; this.audio.play('block');
       this.particles.burst(p.x + Math.sin(p.ry) * 0.7, p.y + 1.2, p.z + Math.cos(p.ry) * 0.7, 0xfff0a0, 10, 4, 0.3);
       p.kx = -ax / al * 3; p.kz = -az / al * 3;
       if (p.stam <= 0) { UI.toast('Guard broken!', 'bad'); p.mode = 'hurt'; p.mt = 0; }
@@ -394,11 +496,13 @@ export class Game {
     this.hurt(ev.dmg, ev.sx, ev.sz);
   }
   hurt(dmg, sx, sz) {
-    const p = this.p; if (p.mode === 'dead') return;
+    const p = this.p; if (p.mode === 'dead' || this.god) return;
+    // armour: each point of defence gives a 5% chance to shrug off half a heart (min 1)
+    const def = this.stats().def; if (dmg > 1 && this.rand() < def * 0.05) dmg -= 1;
     p.hp = Math.max(0, p.hp - dmg); p.inv = 1.0;
     const ax = p.x - sx, az = p.z - sz, al = Math.hypot(ax, az) || 1;
     p.kx = (ax / al) * 9; p.kz = (az / al) * 9; p.mode = 'hurt'; p.mt = 0; p.combo = 0;
-    this.particles.burst(p.x, p.y + 1.2, p.z, 0xff3030, 10, 3, 0.4);
+    this.particles.burst(p.x, p.y + 1.2, p.z, 0xff3030, 10, 3, 0.4); this.audio.play('hurt');
     this.shake = 0.25; document.body.classList.add('hurt'); setTimeout(() => document.body.classList.remove('hurt'), 150);
     if (p.hp <= 0) this.die();
   }
@@ -406,35 +510,46 @@ export class Game {
     const p = this.p; p.mode = 'dead'; p.mt = 0; p.lock = null;
     UI.banner('You have fallen…', 'The legend is not over yet');
   }
+  respawnPoint() {
+    if (this.inDungeon) {
+      if (this.dungeonId === 'mine') { const z = this.p.z; return z < -112 ? MINE_CP.arena : z < -91 && this.s.flags.q3_bridge ? MINE_CP.lavaN : z < -60 ? MINE_CP.lava : MINE_START; }
+      return DUNGEON_START;
+    }
+    if (this.s.home?.hearth) return { x: this.s.home.hearth.x + 1.5, z: this.s.home.hearth.z + 1.5 };
+    return this.p.x > 150 ? { x: CAMP.x + 1, z: CAMP.z + 2 } : SPAWN;
+  }
   respawn() {
-    const p = this.p; const inD = this.inDungeon;
+    const p = this.p; const inD = this.inDungeon, did = this.dungeonId;
     this.fade(() => {
-      const pt = inD ? DUNGEON_START : SPAWN;
-      this.debug.teleport(pt.x, pt.z); p.hp = this.maxHp; p.mode = 'normal'; p.inv = 2; p.stam = 100;
-      if (inD) this.resetDungeonSim();
+      const pt = this.respawnPoint();
+      this.debug.teleport(pt.x, pt.z); p.hp = this.maxHp; p.mode = 'normal'; p.inv = 2; p.stam = 100; this.s.fade = 0;
+      if (inD && did === 'barrow') this.resetDungeonSim();
+      if (inD && did === 'mine') this.resetMineSim();
     });
   }
   targetables() {
     const zoneD = this.inDungeon, out = [];
-    for (const e of this.allEnemies()) if (e.alive && e.id.startsWith('d_') === zoneD) out.push(e);
+    const pre = this.dungeonId === 'mine' ? 'm_' : 'd_';
+    for (const e of this.allEnemies()) if (e.alive && (zoneD ? e.id.startsWith(pre) : !e.id.startsWith('d_') && !e.id.startsWith('m_'))) out.push(e);
     return out;
   }
   doHit(kind) {
-    const p = this.p, base = SWORDS[this.s.sword].dmg;
+    const p = this.p, st = this.stats(), base = st.atk;
     const spin = kind === 'spin';
     const dmg = spin ? base * 2 : Math.ceil(base * ATK[kind].mult);
     const reach = spin ? 3.8 : 2.5;
     const fx = Math.sin(p.ry), fz = Math.cos(p.ry);
     let hits = 0;
+    this.audio.play(spin ? 'spin' : 'swing');
     for (const e of this.targetables()) {
       const T = ENEMY_TYPES[e.type];
       const dx = e.x - p.x, dz = e.z - p.z, d = Math.hypot(dx, dz);
       if (d > reach + T.radius) continue;
+      if (e.type === 'magmaw' && (e.state === 'submerged' || e.state === 'idle')) continue;
       const dot = (dx * fx + dz * fz) / (d || 1);
       if (!spin && dot < 0.25 && d > T.radius + 0.6) continue;
       hits++; this.damageEnemy(e, dmg, kind);
     }
-    // swing trail
     this.trailT = 0.16; this.trail.position.set(p.x, p.y + 1.1, p.z);
     this.trail.geometry.dispose();
     const len = spin ? Math.PI * 2 : kind === 'attack3' ? 0.5 : Math.PI * 0.9;
@@ -444,119 +559,158 @@ export class Game {
     return hits;
   }
   damageEnemy(e, dmg, kind) {
-    const T = ENEMY_TYPES[e.type];
-    const px = e.x - Math.sin(Math.atan2(e.x - this.p.x, e.z - this.p.z)) * T.radius, pz = e.z - Math.cos(Math.atan2(e.x - this.p.x, e.z - this.p.z)) * T.radius;
-    this.particles.burst(px, this.p.y + 1.1, pz, 0xffffff, 6, 3, 0.25);
-    if (e.id.startsWith('d_')) this.onEnemyDamaged(e.id, this.dsim.damage(e.id, dmg, this.p.x, this.p.z), true);
-    else if (this.online) this.net.send({ t: 'attack', id: e.id, dmg, kind });
-    else this.onEnemyDamaged(e.id, this.localSim.damage(e.id, dmg, this.p.x, this.p.z), true);
+    const ench = this.stats().ench;
+    let crit = false;
+    if (ench === 'diamond' && this.rand() < 0.2) { dmg *= 2; crit = true; }
+    if (ench === 'emerald' && this.rand() < 0.25 && this.p.hp < this.maxHp) { this.p.hp += 1; this.particles.burst(this.p.x, this.p.y + 1.4, this.p.z, 0x40ff80, 6, 2, 0.4); }
+    this.damageEnemyRaw(e, dmg, this.p.x, this.p.z, {}, 'combat', crit);
+  }
+  damageEnemyRaw(e, dmg, fx, fz, opts = {}, skill = 'combat', crit = false) {
+    const T = ENEMY_TYPES[e.type], ang = Math.atan2(e.x - fx, e.z - fz);
+    this.particles.burst(e.x - Math.sin(ang) * T.radius, this.terrainH(e.x, e.z) + 1.1, e.z - Math.cos(ang) * T.radius, crit ? 0x80e0ff : 0xffffff, crit ? 12 : 6, 3, 0.25);
+    this.audio.play('hit');
+    if (crit) UI.toast('💠 Critical hit!', 'good');
+    if (e.id.startsWith('d_')) this.onEnemyDamaged(e.id, this.dsim.damage(e.id, dmg, fx, fz, opts), true, skill);
+    else if (e.id.startsWith('m_')) this.onEnemyDamaged(e.id, this.msim.damage(e.id, dmg, fx, fz, opts), true, skill);
+    else if (this.online) { this.net.send({ t: 'attack', id: e.id, dmg, kind: skill }); this.pendingSkill = skill; }
+    else this.onEnemyDamaged(e.id, this.localSim.damage(e.id, dmg, fx, fz, opts), true, skill);
     this.lastAttackHit = { id: e.id, t: this.t };
   }
-  onEnemyDamaged(id, r, mine) {
+  onEnemyDamaged(id, r, mine, skill = this.pendingSkill || 'combat') {
     if (!r || r.ok === false) return;
     const e = this.enemyById(id), v = this.views.get(id);
+    if (r.flipped) { if (v) v.flash(0xffd040); UI.toast('The Shellback flips onto its back — strike its belly!', 'good'); return; }
+    if (r.stunned) { this.shake = 0.6; this.audio.play('boom'); UI.toast('Magmaw chokes on the bomb! Its molten heart is exposed — STRIKE!', 'good'); if (v) v.flash(0xffd040); return; }
     if (r.blocked) {
-      if (v) v.flash(0x4466ff);
+      if (v) v.flash(0x4466ff); this.audio.play('clang');
       if (e) this.particles.burst(e.x, this.terrainH(e.x, e.z) + 2.5, e.z, 0xa0c0ff, 8, 3, 0.3);
-      if (mine && (!this.clangT || this.t - this.clangT > 3)) { this.clangT = this.t; UI.toast('Clang! His armour is too thick — hit his glowing back or strike after a slam.', 'bad'); }
+      if (mine && (!this.clangT || this.t - this.clangT > 3)) {
+        this.clangT = this.t;
+        UI.toast(e?.type === 'shellback' ? 'Clang! Its shell is too hard. A bomb might flip it…' : e?.type === 'magmaw' ? 'Its hide is molten rock. Throw a bomb into its mouth while it inhales!' : 'Clang! His armour is too thick — hit his glowing back or strike after a slam.', 'bad');
+      }
       return;
     }
-    if (v) v.flash(); if (v) v.showBarT = 4;
+    if (v) { v.flash(); v.showBarT = 4; }
     if (r.killed) {
+      const type = e?.type || this.enemySpawnType.get(id) || 'mossling';
       if (e) this.particles.burst(e.x, this.terrainH(e.x, e.z) + 0.8, e.z, 0x9a8aff, 22, 4, 0.8);
+      this.audio.play('kill');
       if (this.p.lock && this.p.lock.id === id) this.p.lock = null;
-      if (mine) this.addXp('combat', r.xp || ENEMY_TYPES[e?.type || this.enemySpawnType.get(id) || 'mossling'].xp);
+      if (mine) { this.addXp(skill === 'archery' || skill === 'magic' ? skill : 'combat', r.xp || ENEMY_TYPES[type].xp); if (e) this.rollLoot(type, e.x, e.z); }
       if (id === 'd_warden') { this.s.flags.boss = true; this.dungeon.setState(this.dstate()); UI.banner('Barrow Warden defeated!', 'A chest appears…'); this.save(); }
+      if (id === 'm_magmaw') { this.s.flags.q3_boss = true; this.mine.setState(this.s.flags); this.shake = 1; UI.banner('Magmaw defeated!', 'The lava cools… a chest rises from the crucible'); this.save(); }
     }
   }
-
   // ---------------- interactions ----------------
   findInteract() {
-    const p = this.p, near = [];
+    const p = this.p, near = [], f = this.s.flags;
     const add = (d, max, o) => { if (d < max) near.push({ d, ...o }); };
+    const dist = (o) => Math.hypot(o.x - p.x, o.z - p.z);
     if (!this.inDungeon) {
-      for (const n of this.npcs) add(Math.hypot(n.x - p.x, n.z - p.z), 2.8, { kind: 'npc', label: `Talk to ${n.name}`, npc: n });
-      for (const s of this.world.stations) add(Math.hypot(s.x - p.x, s.z - p.z), 2.6, { kind: 'station', label: s.label, station: s.kind });
+      for (const n of this.npcs) add(dist(n), 2.8, { kind: 'npc', label: `Talk to ${n.name}`, npc: n });
+      for (const s of this.world.stations) add(dist(s), 2.6, { kind: 'station', label: s.label, station: s.kind, st: s });
       for (const n of this.world.nodes.values()) {
         if (n.depleted) continue;
         const dx = n.x - p.x, dz = n.z - p.z; if (Math.abs(dx) > 4 || Math.abs(dz) > 4) continue;
-        const def = NODE_TYPES[n.type];
-        add(Math.hypot(dx, dz), n.type === 'tree' || n.type === 'oak' ? 2.3 : 2.7, { kind: 'node', label: `${def.label} <small>(${SKILL_NAMES[def.skill]} ${def.level})</small>`, node: n });
+        const def = NODE_TYPES[n.type], tr = this.traps.get(n.id);
+        const lbl = tr ? (tr.ready ? 'Check trap' : 'Trap set… waiting') : `${def.label} <small>(${SKILL_NAMES[def.skill]} ${def.level})</small>`;
+        add(Math.hypot(dx, dz), def.fish ? 3.2 : n.type === 'tree' || n.type === 'oak' || n.type === 'ashtree' ? 2.3 : 2.7, { kind: tr ? (tr.ready ? 'trapcheck' : 'none') : 'node', label: lbl, node: n, tr });
       }
-      const en = this.world.entrance; add(Math.hypot(en.x - p.x, en.z - p.z), 2.6, { kind: 'enter', label: 'Enter the Hollow Barrow' });
+      add(dist(this.world.entrance), 2.6, { kind: 'enter', label: 'Enter the Hollow Barrow' });
+      add(dist(this.ridge.mineEntrance), 2.8, { kind: 'enterMine', label: 'Enter Cinderdeep Mine' });
+      for (const a of this.altars) add(dist(a), 3.0, { kind: 'altar', a, label: `Use ${a.name} <small>(Runemaking ${a.level})</small>` });
+      const hr = this.ridge.hearths.get('h_ridge');
+      if (hr && !hr.lit) add(dist(hr), 3, { kind: 'hearthLight', label: f.q2_echo ? 'Relight the Hearthstone' : 'A cold, dormant Hearthstone' });
+      if (f.q2_start && !f.q2_echo) add(dist(FADE_ECHO), 2.6, { kind: 'echo', label: 'Touch the Fade-echo' });
+      for (const s of this.ridge.secrets.values()) if (s.broken && !s.opened) add(Math.hypot(s.cx - p.x, s.cz - p.z), 2.2, { kind: 'secret', s, label: 'Open the hidden chest' });
+      for (const r of this.runaways) if (r.P.root.visible && !r.home) add(dist(r), 2.6, { kind: 'runaway', r, label: `Calm the runaway ${PETS[r.type].name.toLowerCase()}` });
+      if (!this.buildMode) for (const b of this.building.interactablesNear(p.x, p.z, 2.4)) {
+        if (Math.abs(b.y - p.y) > 3.5) continue;
+        const L = { door: this.building.isOpen(b.k, b.i) ? 'Close door' : 'Open door', chest: 'Open storage chest', bench: 'Use workbench', campfire: 'Cook on campfire', hearth: this.s.home?.hearth && Math.hypot(this.s.home.hearth.x - b.x, this.s.home.hearth.z - b.z) < 0.1 ? 'Your Hearthstone (respawn point)' : 'Bind to this Hearthstone', bankchest: 'Open bank chest' }[b.type];
+        add(b.d + 0.2, 2.4, { kind: 'piece', b, label: L });
+      }
+    } else if (this.dungeonId === 'mine') {
+      this.mineInteracts(add);
     } else {
       const D = this.dungeon;
-      if (!D.chest.opened) add(Math.hypot(D.chest.x - p.x, D.chest.z - p.z), 2.0, { kind: 'chest', label: 'Open chest' });
-      if (!D.lever.pulled) add(Math.hypot(D.lever.x - p.x, D.lever.z - p.z), 1.8, { kind: 'lever', label: 'Pull lever' });
-      if (this.s.flags.boss && !D.bossChest.opened) add(Math.hypot(D.bossChest.x - p.x, D.bossChest.z - p.z), 2.0, { kind: 'bossChest', label: 'Open the Warden\'s chest' });
-      add(Math.hypot(D.exitA.x - p.x, D.exitA.z - p.z), 2.0, { kind: 'exit', label: 'Leave the Barrow' });
-      if (this.s.flags.boss) add(Math.hypot(D.exitD.x - p.x, D.exitD.z - p.z), 2.2, { kind: 'exit', label: 'Return to the surface' });
+      if (!D.chest.opened) add(dist(D.chest), 2.0, { kind: 'chest', label: 'Open chest' });
+      if (!D.lever.pulled) add(dist(D.lever), 1.8, { kind: 'lever', label: 'Pull lever' });
+      if (f.boss && !D.bossChest.opened) add(dist(D.bossChest), 2.0, { kind: 'bossChest', label: 'Open the Warden\'s chest' });
+      add(dist(D.exitA), 2.0, { kind: 'exit', label: 'Leave the Barrow' });
+      if (f.boss) add(dist(D.exitD), 2.2, { kind: 'exit', label: 'Return to the surface' });
     }
+    for (const L of this.loot) if (Math.hypot(L.x - p.x, L.z - p.z) < 1.5) { /* auto-pickup */ }
     near.sort((a, b) => a.d - b.d);
-    return near[0] || null;
+    return near.filter((n) => n.kind !== 'none')[0] || near[0] || null;
   }
   interact(it) {
-    const p = this.p, D = this.dungeon;
+    const D = this.dungeon, f = this.s.flags;
     switch (it.kind) {
-      case 'npc': return this.talk(it.npc);
-      case 'station': return this.openPanel(it.station);
-      case 'node': return this.startGather(it.node);
+      case 'npc': it.npc.av.root.rotation.y = Math.atan2(this.p.x - it.npc.x, this.p.z - it.npc.z); return this.talk(it.npc);
+      case 'station': this.currentStation = it.st; return this.openPanel(it.station);
+      case 'node': return NODE_TYPES[it.node.type].trap ? this.setTrap(it.node) : this.startGather(it.node);
+      case 'trapcheck': return this.checkTrap(it.tr);
       case 'enter': return this.enterDungeon();
+      case 'enterMine': return this.enterMine();
       case 'exit': return this.exitDungeon();
+      case 'altar': return this.openPanel('altar:' + it.a.id);
+      case 'echo': f.q2_start = f.q2_camp = true; return this.vision();
+      case 'hearthLight':
+        if (!f.q2_echo) return UI.toast('The stone is cold. Something in the fog nearby calls to your shard…', '');
+        f.q2_lit = true; this.applyWorldState(); this.audio.play('quest'); this.s.fade = 0;
+        this.particles.burst(it.x ?? this.p.x, this.p.y + 2, this.p.z, 0xffd27a, 40, 6, 1.2);
+        UI.banner('The Ridge Hearthstone burns again!', 'The Fade recoils. Return to Scout Corin.'); this.save(); return;
+      case 'secret': {
+        const s = it.s; f[s.id + '_o'] = true; this.ridge.setSecret(s.id, true, true);
+        if (s.id === 's_isle') { this.giveGold(60); this.give('lantern_oil', 1); this.give('uncut_emerald', 1); } else { this.giveGold(120); this.give('uncut_diamond', 1); this.give('fire_shard', 2); }
+        UI.banner('Secret treasure!', 'Bombs reveal what walls hide'); this.audio.play('quest'); this.save(); return;
+      }
+      case 'runaway': return this.findRunaway(it.r);
+      case 'piece': {
+        const b = it.b;
+        if (b.type === 'door') { this.building.toggleDoor(b.k, b.i); this.audio.play('door'); this.save(); return; }
+        if (b.type === 'chest') return this.openPanel('chest:' + b.k + '#' + b.i);
+        if (b.type === 'bankchest') return this.openPanel('bank');
+        if (b.type === 'bench') { this.currentStation = { obj: b.mesh }; return this.openPanel('workbench'); }
+        if (b.type === 'campfire') { this.currentStation = { obj: b.mesh }; return this.openPanel('range'); }
+        if (b.type === 'hearth') { this.s.home.hearth = { x: b.x, z: b.z }; this.audio.play('quest'); UI.banner('Hearthstone bound', 'You will respawn here'); this.save(); return; }
+        return;
+      }
       case 'chest':
-        this.s.flags.grapple = true; D.setState(this.dstate());
-        this.particles.burst(D.chest.x, 1.2, D.chest.z, 0xffd040, 26, 4, 1);
+        f.grapple = true; D.setState(this.dstate());
+        this.particles.burst(D.chest.x, 1.2, D.chest.z, 0xffd040, 26, 4, 1); this.audio.play('quest');
         UI.banner('You got the Grapple Hook!', this.touch ? 'Tap 🪝 near a golden ring to pull yourself across' : 'Press G (or lock on) near a golden ring to pull yourself across');
         UI.show('#t-grapple', true); this.save(); return;
       case 'lever':
-        this.s.flags.lever = true; D.setState(this.dstate()); D.gate.position.y = 0; UI.toast('A heavy gate grinds open somewhere nearby…', 'good'); this.shake = 0.3; this.save(); return;
+        f.lever = true; D.setState(this.dstate()); D.gate.position.y = 0; UI.toast('A heavy gate grinds open somewhere nearby…', 'good'); this.shake = 0.3; this.audio.play('door'); this.save(); return;
       case 'bossChest':
-        this.s.flags.shard = true; D.setState(this.dstate()); this.give('mythstone', 1);
-        this.particles.burst(D.bossChest.x, 1.2, D.bossChest.z, 0x80e0ff, 30, 5, 1.2);
+        f.shard = true; D.setState(this.dstate()); this.give('mythstone', 1);
+        this.particles.burst(D.bossChest.x, 1.2, D.bossChest.z, 0x80e0ff, 30, 5, 1.2); this.audio.play('quest');
         UI.banner('You found a Mythstone Shard!', 'Bring it to Elder Maren'); this.save(); return;
+      default: if (it.kind?.startsWith('m') || it.kind === 'flower') return this.mineInteract(it);
     }
-  }
-  talk(npc) {
-    const n = this.s.name, st = this.questStage();
-    let lines, after = null;
-    if (npc.id === 'elder') {
-      if (!this.s.flags.talked) {
-        lines = [`Ah, a new face! Welcome to Mythbound Isle, ${n}.`, 'Long ago our heroes were bound into legend — that is why the isle bears its name.', 'But the old Hollow Barrow to the north has begun to stir. Mosslings and Grubkins creep closer every night.', 'Deep inside, a Warden of stone guards a Mythstone shard — a piece of the old legend. Will you bring it back?',
-          this.touch ? 'Follow the path north. Use 🎯 to lock on, 🛡 to block and ⤾ to roll. Hold ⚔ to charge a spin attack!' : 'Follow the path north. Tab or right-click locks on, hold Q to block, Space to roll. Hold attack to charge a spin!'];
-        after = () => { this.s.flags.talked = true; UI.toast('Quest started: The Hollow Barrow', 'good'); this.save(); };
-      } else if (this.s.flags.shard && !this.s.flags.done) {
-        lines = ['You… you found it! The Mythstone shard hums with old power.', 'Take this Heart Container. You have more than earned it.', `There are more shards scattered beyond the sea, ${n}. But that is a story for another day.`];
-        after = () => { this.s.flags.done = true; this.s.inv.mythstone = Math.max(0, (this.s.inv.mythstone || 1) - 1); this.s.maxHearts += 1; this.p.hp = this.maxHp; UI.banner('Quest complete!', 'Heart Container: +1 max heart'); this.save(); };
-      } else if (this.s.flags.done) lines = ['The isle sleeps easier thanks to you. Why not build yourself a home out in the Wilds?'];
-      else lines = ['The Hollow Barrow lies to the north. Watch your foes — they flash red just before they strike.'];
-    } else if (npc.id === 'smith') {
-      lines = ['Need a better blade? Mine copper and tin in the eastern hills.', 'Smelt them into bronze at my furnace, then hammer out a sword on the anvil.', 'Iron needs Mining and Smithing level 3 — but it hits like a mule.'];
-    } else {
-      lines = [this.touch ? 'Tap 🧱 out in the Wilds to build! Pick a piece, then ＋ to place and － to remove.' : 'Press B out in the Wilds to build! 1 wood block, 2 stone block, 3 plank floor. E or click to place, X or right-click to remove.', 'Not in here, mind — the village is protected. No building, no brawling.', 'Logs come from trees, stone from plain grey rocks.'];
-    }
-    let i = 0; this.inDialog = true;
-    const next = () => {
-      if (i >= lines.length) { UI.closeDialog(); this.inDialog = false; this.dialogNext = null; after?.(); return; }
-      UI.dialog(npc.name, lines[i++], next);
-    };
-    this.dialogNext = next; next();
-    npc.av.root.rotation.y = Math.atan2(this.p.x - npc.x, this.p.z - npc.z);
   }
   startGather(n) {
     const def = NODE_TYPES[n.type];
     if (this.level(def.skill) < def.level) return UI.toast(`You need ${SKILL_NAMES[def.skill]} level ${def.level}.`, 'bad');
+    if (!this.canAdd(def.item, def.qty)) return this.invFull();
     const p = this.p; p.mode = 'gather'; p.mt = 0; p.gnode = n; p.ry = Math.atan2(n.x - p.x, n.z - p.z);
+    p.gtime = def.time * gatherSpeed(this.level(def.skill));
   }
   finishGather(n) {
     if (n.depleted) return UI.toast('Nothing left here.', 'bad');
-    if (this.online) return this.net.send({ t: 'gather', id: n.id });
+    if (this.online && !NODE_TYPES[n.type].fish && !['essence', 'ashtree', 'coal'].includes(n.type) && !n.id.match(/^(riron|rrock)/)) return this.net.send({ t: 'gather', id: n.id });
     this.world.setNodeDepleted(n.id, true, performance.now() + NODE_TYPES[n.type].respawn * 1000);
     this.rewardGather(n);
   }
   rewardGather(n) {
-    if (!n) return; const def = NODE_TYPES[n.type];
-    this.give(def.item, def.qty); this.addXp(def.skill, def.xp);
-    this.particles.burst(n.x, this.terrainH(n.x, n.z) + 1, n.z, def.skill === 'woodcutting' ? 0x6aa040 : 0x9a9a9a, 12, 3, 0.6);
+    if (!n) return; const def = NODE_TYPES[n.type], L = this.level(def.skill);
+    const dbl = (def.skill === 'woodcutting' && L >= 30 || def.skill === 'fishing' && L >= 25) && this.rand() < 0.2;
+    if (!this.give(def.item, def.qty * (dbl ? 2 : 1))) return;
+    this.addXp(def.skill, def.xp);
+    if (def.gems) this.rollGem(n.x);
+    this.audio.play(def.skill === 'woodcutting' ? 'chop' : def.skill === 'fishing' ? 'splash' : 'mine');
+    this.particles.burst(n.x, this.terrainH(n.x, n.z) + 1, n.z, def.skill === 'woodcutting' ? 0x6aa040 : def.fish ? 0x80c0ff : 0x9a9a9a, 12, 3, 0.6);
     if (this.buildMode) this.refreshBuildBar();
     this.save();
   }
@@ -569,39 +723,48 @@ export class Game {
       UI.banner('The Hollow Barrow'); this.save();
     });
   }
+  enterMine() {
+    this.fade(() => {
+      this.debug.teleport(MINE_START.x, MINE_START.z, 0); this.p.ry = Math.PI; this.cam.yaw = 0;
+      if (this.s.flags.q3_start) this.s.flags.q3_enter = true;
+      this.resetMineSim(); this.mine.setState(this.s.flags); this.p.lock = null;
+      if (this.buildMode) this.toggleBuild();
+      UI.banner('Cinderdeep Mine', 'The air shimmers with heat'); this.save();
+    });
+  }
   exitDungeon() {
+    if (this.dungeonId === 'mine') return this.fade(() => { const me = this.ridge.mineEntrance; this.debug.teleport(me.x - 4, me.z); this.p.ry = -Math.PI / 2; this.cam.yaw = Math.PI / 2; this.p.lock = null; UI.banner('Emberfall Ridge'); this.save(); });
     this.fade(() => { this.debug.teleport(ENTRANCE.x, ENTRANCE.z + 5); this.p.ry = 0; this.cam.yaw = Math.PI; this.p.lock = null; UI.banner('Mythbound Isle'); this.save(); });
   }
 
-  // ---------------- building ----------------
+  // ---------------- building (v2: aim where you look, rotate, home plots) ----------------
   toggleBuild() {
-    if (!this.buildMode && this.inDungeon) return UI.toast('The barrow resists your building.', 'bad');
+    if (!this.buildMode && this.inDungeon) return UI.toast('The rock resists your building.', 'bad');
     this.buildMode = !this.buildMode; this.input.buildMode = this.buildMode;
     this.building.ghost.visible = this.buildMode; UI.show('#tbuild', this.buildMode && this.touch);
-    this.refreshBuildBar();
-    if (this.buildMode) UI.toast(this.zoneName() === 'village' ? 'Building is not allowed in the village. Head out to the Wilds.' : 'Build mode', this.zoneName() === 'village' ? 'bad' : 'good');
+    this.refreshBuildBar(); this.drawPlot();
+    const z = this.zoneName();
+    if (this.buildMode) UI.toast(z === 'village' || z === 'camp' ? 'Building is not allowed in safe zones. Head out to the Wilds.' : 'Build mode — aim with the camera', z === 'village' || z === 'camp' ? 'bad' : 'good');
   }
-  buildTarget() {
-    const p = this.p; const fx = p.x + Math.sin(p.ry) * 2.4, fz = p.z + Math.cos(p.ry) * 2.4;
-    const [gx, gz] = cellOf(fx, fz); return { gx, gz, k: gx + ',' + gz };
-  }
+  buildTarget() { return this.aimCell(); }
   place() {
     const { gx, gz, k } = this.buildTarget();
     const stack = this.building.stacks.get(k) || [];
-    const reason = buildRefusal(gx, gz, stack.length);
+    const reason = this.pieceRefusal(gx, gz, this.piece);
     if (reason) { UI.toast(reason, 'bad'); this.lastBuild = { ok: false, reason }; return false; }
-    const piece = PIECES[this.piece];
-    if (!this.has(piece.cost)) { const [it, n] = Object.entries(piece.cost)[0]; const r = `You need ${n} ${ITEMS[it].name} — ${it === 'log' ? 'chop a tree' : 'mine a grey rock'}.`; UI.toast(r, 'bad'); this.lastBuild = { ok: false, reason: r }; return false; }
-    if (this.online) { this.net.send({ t: 'build', gx, gz, m: this.piece }); this.pendingBuild = { k, piece: this.piece }; return true; }
-    this.spend(piece.cost); this.building.setStack(k, [...stack, this.piece]); this.afterPlace(gx, gz);
+    const cost = this.costFor(this.piece);
+    if (!this.has(cost)) { const r = `You need ${Object.entries(cost).map(([it, n]) => `${n} ${ITEMS[it].name}`).join(' + ')}.`; UI.toast(r, 'bad'); this.lastBuild = { ok: false, reason: r }; return false; }
+    const entry = this.rot ? `${this.piece}@${this.rot}` : this.piece;
+    if (this.online) { this.net.send({ t: 'build', gx, gz, m: entry }); this.pendingBuild = { k, piece: entry }; return true; }
+    this.spend(cost); this.building.setStack(k, [...stack, entry]); this.afterPlace(gx, gz);
+    if (this.piece === 'hearth') { const [cx, cz] = cellCenter(gx, gz); this.s.home.hearth = { x: cx, z: cz }; UI.banner('Hearthstone raised!', 'You will respawn at your home'); }
     this.lastBuild = { ok: true, k }; this.save(); return true;
   }
   afterPlace(gx, gz) {
     const [cx, cz] = cellCenter(gx, gz);
-    this.particles.burst(cx, this.building.top(gx, gz), cz, 0xd0b080, 8, 2.5, 0.4);
-    // don't trap the player inside a fresh block
+    this.particles.burst(cx, this.building.top(gx, gz), cz, 0xd0b080, 8, 2.5, 0.4); this.audio.play('place');
     const p = this.p;
-    if (Math.abs(p.x - cx) < BLOCK / 2 + PR && Math.abs(p.z - cz) < BLOCK / 2 + PR) { const top = this.building.top(gx, gz); if (top > p.y) p.y = top; }
+    if (Math.abs(p.x - cx) < BLOCK / 2 + PR && Math.abs(p.z - cz) < BLOCK / 2 + PR) { const top = this.building.top(gx, gz); if (top > p.y && top - p.y < 3.5) p.y = top; }
     this.refreshBuildBar();
   }
   removePiece() {
@@ -609,22 +772,31 @@ export class Game {
     const stack = this.building.stacks.get(k);
     if (!stack || !stack.length) return UI.toast('Nothing to remove there.', 'bad');
     if (this.online) return this.net.send({ t: 'unbuild', gx, gz });
-    const piece = stack[stack.length - 1];
+    const entry = stack[stack.length - 1], type = pieceType(entry);
+    if (type === 'chest' && Object.values(this.s.chests[k + '#' + (stack.length - 1)] || {}).some((n) => n > 0)) return UI.toast('Empty the chest first.', 'bad');
     this.building.setStack(k, stack.slice(0, -1));
-    for (const [it, n] of Object.entries(PIECES[piece].cost)) this.s.inv[it] = (this.s.inv[it] || 0) + n;
-    this.refreshBuildBar(); this.save();
+    for (const [it, n] of Object.entries(PIECES[type].cost)) this.s.inv[it] = (this.s.inv[it] || 0) + n;
+    if (type === 'hearth' && this.s.home.hearth) { const [cx, cz] = cellCenter(gx, gz); if (Math.hypot(cx - this.s.home.hearth.x, cz - this.s.home.hearth.z) < 0.1) this.s.home.hearth = null; }
+    this.audio.play('place'); this.refreshBuildBar(); this.save();
   }
   onBlocks(m) {
     const prev = (this.building.stacks.get(m.k) || []).length;
     this.building.setStack(m.k, m.s);
     if (m.by !== this.myId) return;
     const [gx, gz] = m.k.split(',').map(Number);
-    if (m.s.length > prev) { this.spend(PIECES[m.s[m.s.length - 1]].cost); this.afterPlace(gx, gz); this.lastBuild = { ok: true, k: m.k }; }
-    else if (m.removed) { for (const [it, n] of Object.entries(PIECES[m.removed].cost)) this.s.inv[it] = (this.s.inv[it] || 0) + n; this.refreshBuildBar(); }
+    if (m.s.length > prev) { this.spend(PIECES[pieceType(m.s[m.s.length - 1])].cost); this.afterPlace(gx, gz); this.lastBuild = { ok: true, k: m.k }; }
+    else if (m.removed) { for (const [it, n] of Object.entries(PIECES[pieceType(m.removed)].cost)) this.s.inv[it] = (this.s.inv[it] || 0) + n; this.refreshBuildBar(); }
     this.save();
   }
 
   // ---------------- grapple ----------------
+  grapplePoints() {
+    if (this.inDungeon) return this.dungeonId === 'barrow' ? this.dungeon.grapplePoints : [];
+    return this.building.anchors().map((a) => {
+      const dx = a.x - this.p.x, dz = a.z - this.p.z, d = Math.hypot(dx, dz) || 1;
+      return { ...a, land: { x: a.x - dx / d * 0.85, z: a.z - dz / d * 0.85 }, landY: a.y - 3.15 };
+    });
+  }
   tryGrapple() {
     const p = this.p;
     if (!this.s.flags.grapple) return UI.toast('You don\'t have a grapple hook yet.', 'bad');
@@ -632,7 +804,7 @@ export class Game {
     if (p.lock && p.lock.grapple) target = p.lock;
     else {
       let best = 1e9; const fx = Math.sin(p.ry), fz = Math.cos(p.ry);
-      for (const g of this.inDungeon ? this.dungeon.grapplePoints : []) {
+      for (const g of this.grapplePoints()) {
         const dx = g.x - p.x, dz = g.z - p.z, d = Math.hypot(dx, dz);
         if (d > 24 || d < 1.5) continue;
         const camF = -(dx * Math.sin(this.cam.yaw) + dz * Math.cos(this.cam.yaw)) / d;
@@ -641,8 +813,9 @@ export class Game {
       }
     }
     p.mode = 'grapple'; p.mt = 0; p.gr = target ? { ...target, hit: true } : { x: p.x + Math.sin(p.ry) * 10, y: p.y + 1.5, z: p.z + Math.cos(p.ry) * 10, hit: false };
+    this.audio.play('grapple');
     if (target) p.ry = Math.atan2(target.x - p.x, target.z - p.z);
-    else UI.toast('Nothing to latch onto.', 'bad');
+    else UI.toast(this.inDungeon ? 'Nothing to latch onto.' : 'Nothing to latch onto. Build a Grapple Anchor!', 'bad');
   }
 
   // ---------------- lock-on ----------------
@@ -651,8 +824,8 @@ export class Game {
     if (p.lock) { p.lock = null; return; }
     let best = null, bs = 1e9;
     const cfx = -Math.sin(this.cam.yaw), cfz = -Math.cos(this.cam.yaw);
-    const cands = this.targetables().map((e) => ({ id: e.id, x: e.x, z: e.z, e }));
-    if (this.s.flags.grapple && this.inDungeon) for (const g of this.dungeon.grapplePoints) cands.push({ id: 'gp_' + g.id, x: g.x, z: g.z, grapple: true, g });
+    const cands = this.targetables().filter((e) => !(e.type === 'magmaw' && e.state === 'submerged')).map((e) => ({ id: e.id, x: e.x, z: e.z, e }));
+    if (this.s.flags.grapple) for (const g of this.grapplePoints()) cands.push({ id: 'gp_' + g.id, x: g.x, z: g.z, grapple: true, g });
     for (const c of cands) {
       const dx = c.x - p.x, dz = c.z - p.z, d = Math.hypot(dx, dz);
       if (d > (c.grapple ? 24 : 16)) continue;
@@ -667,17 +840,15 @@ export class Game {
     if (l.grapple) return { x: l.x, y: l.y, z: l.z };
     const e = this.enemyById(l.id); if (!e || !e.alive) { this.p.lock = null; return null; }
     const v = this.views.get(l.id);
-    return { x: v ? v.x : e.x, y: this.terrainH(e.x, e.z) + (ENEMY_TYPES[e.type].boss ? 3 : 1.2), z: v ? v.z : e.z };
+    return { x: v ? v.x : e.x, y: this.terrainH(e.x, e.z) + (e.type === 'magmaw' ? 5 : ENEMY_TYPES[e.type].boss ? 3 : 1.2), z: v ? v.z : e.z };
   }
-
-  // ---------------- stamina ----------------
   useStam(n) { this.p.stam = Math.max(0, this.p.stam - n); this.p.stamT = 0; }
-
   // ---------------- player update ----------------
   animName() {
     const p = this.p;
     if (p.mode === 'attack') return 'attack' + p.combo;
     if (['charge', 'spin', 'block', 'roll', 'gather', 'hurt', 'dead', 'grapple'].includes(p.mode)) return p.mode;
+    if (this.animOverride && this.animOverride.t > 0) return this.animOverride.name;
     if (!p.grounded) return 'jump';
     return p.speed > 6.5 ? 'run' : p.speed > 0.3 ? 'walk' : 'idle';
   }
@@ -686,13 +857,20 @@ export class Game {
     p.mt += dt; p.inv -= dt; p.stamT += dt;
     if (p.stamT > 0.8 && p.mode !== 'block' && p.mode !== 'charge') p.stam = Math.min(100, p.stam + 30 * dt);
     const uiBlocked = this.inDialog || UI.panelOpen() || this.fading;
+    if (this.animOverride) { this.animOverride.t -= dt; this.animOverride.mt = (this.animOverride.mt || 0) + dt; if (this.animOverride.t <= 0) this.animOverride = null; }
     // global UI keys
     if (I.wasPressed('escape')) { if (UI.panelOpen()) this.closePanel(); else if (this.buildMode) this.toggleBuild(); }
     if (I.wasPressed('skills')) this.togglePanel('skills');
     if (I.wasPressed('bag')) this.togglePanel('bag');
     if (I.wasPressed('help')) this.togglePanel('help');
+    if (I.wasPressed('journal')) this.togglePanel('journal');
+    if (I.wasPressed('spellbook')) this.togglePanel('spells');
+    if (I.wasPressed('settings')) this.togglePanel('settings');
     if (I.wasPressed('chat')) { const ci = document.getElementById('chat-input'); setTimeout(() => ci.focus(), 0); if (document.pointerLockElement) document.exitPointerLock(); }
-    if (this.inDialog) { if (I.wasPressed('interact') || I.wasPressed('attack') || I.wasPressed('place')) this.dialogNext?.(); }
+    if (this.inDialog) {
+      if (I.wasPressed('interact') || I.wasPressed('attack') || I.wasPressed('place')) this.dialogNext?.();
+      for (let i = 1; i <= 4; i++) if (I.wasPressed('piece' + i)) this.dialogChoose?.(i - 1);
+    }
 
     let mv = uiBlocked ? { x: 0, y: 0 } : I.move();
     const moving = Math.hypot(mv.x, mv.y) > 0.1;
@@ -709,18 +887,25 @@ export class Game {
     if (!uiBlocked && p.mode !== 'dead' && p.mode !== 'hurt' && p.mode !== 'grapple') {
       if (I.wasPressed('build')) this.toggleBuild();
       if (this.buildMode) {
-        if (I.wasPressed('piece1')) this.piece = 'wood'; if (I.wasPressed('piece2')) this.piece = 'stone'; if (I.wasPressed('piece3')) this.piece = 'floor';
-        if (I.wasPressed('cycle')) { const ks = Object.keys(PIECES); this.piece = ks[(ks.indexOf(this.piece) + 1) % ks.length]; }
-        if (I.wasPressed('piece1') || I.wasPressed('piece2') || I.wasPressed('piece3') || I.wasPressed('cycle')) this.refreshBuildBar();
+        let ch = false;
+        for (let i = 1; i <= 10; i++) if (I.wasPressed('piece' + i)) { const page = this.piecePage || 0, idx = page * 10 + i - 1; if (PIECE_ORDER[idx]) { this.piece = PIECE_ORDER[idx]; ch = true; } }
+        if (I.wasPressed('cycle') || I.wheel) { const dir = I.wheel ? Math.sign(I.wheel) : 1; I.wheel = 0; const ks = PIECE_ORDER; this.piece = ks[(ks.indexOf(this.piece) + dir + ks.length) % ks.length]; ch = true; }
+        if (I.wasPressed('bomb') || I.wasPressed('rotate')) { this.rot = (this.rot + 1) & 3; ch = true; this.audio.play('ui'); }
+        if (I.wasPressed('claim')) this.claimPlot();
+        if (ch) this.refreshBuildBar();
         if (I.wasPressed('place') || I.wasPressed('interact')) this.place();
         if (I.wasPressed('remove')) this.removePiece();
       }
       if (I.wasPressed('lock') && !this.buildMode) this.toggleLock();
       const free = p.mode === 'normal' || p.mode === 'block';
       if (free && !this.buildMode) {
-        if (I.wasPressed('attack')) { if (this.zoneName() === 'village') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
+        if (I.wasPressed('attack')) { if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
         else if (I.wasPressed('roll') && p.stam >= 10 && p.grounded) { p.mode = 'roll'; p.mt = 0; this.useStam(22); p.rdx = wl > 0.1 ? wx / wl : (lockP ? -fx : Math.sin(p.ry)); p.rdz = wl > 0.1 ? wz / wl : (lockP ? -fz : Math.cos(p.ry)); }
         else if (I.wasPressed('grapple')) this.tryGrapple();
+        else if (I.wasPressed('bomb')) this.throwBomb();
+        else if (I.wasPressed('bow')) { if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Not in a safe zone.', ''); else this.shoot(); }
+        else if (I.wasPressed('spell')) { const sp = SPELLS.find((x) => x.id === this.s.spell); if ((sp?.kind === 'bolt') && (this.zoneName() === 'village' || this.zoneName() === 'camp')) UI.toast('Not in a safe zone.', ''); else this.castSpell(); }
+        else if (I.wasPressed('quick')) this.useQuick();
         else if (I.wasPressed('interact') && !this.inDialog) { const it = this.findInteract(); if (it) this.interact(it); }
       }
       if (p.mode === 'normal' && I.isDown('shield') && !this.buildMode) { p.mode = 'block'; p.mt = 0; }
@@ -779,10 +964,10 @@ export class Game {
       }
       case 'gather': {
         const n = p.gnode, def = NODE_TYPES[n.type];
-        if (Math.floor(p.mt * 1.6) !== Math.floor((p.mt - dt) * 1.6)) { this.particles.burst(n.x, this.terrainH(n.x, n.z) + 1, n.z, def.skill === 'woodcutting' ? 0x8a6a3a : 0xbbbbbb, 4, 2, 0.3); n.obj.rotation.z = 0.06; }
+        if (Math.floor(p.mt * 1.6) !== Math.floor((p.mt - dt) * 1.6)) { this.audio.play(def.skill === 'woodcutting' ? 'chop' : def.fish ? 'splash' : 'mine'); this.particles.burst(n.x, this.terrainH(n.x, n.z) + 1, n.z, def.skill === 'woodcutting' ? 0x8a6a3a : 0xbbbbbb, 4, 2, 0.3); n.obj.rotation.z = 0.06; }
         n.obj.rotation.z *= 0.85;
         if (n.depleted) p.mode = 'normal';
-        else if (p.mt >= def.time) { p.mode = 'normal'; this.finishGather(n); }
+        else if (p.mt >= (p.gtime || def.time)) { p.mode = 'normal'; this.finishGather(n); }
         break;
       }
       case 'hurt':
@@ -800,8 +985,8 @@ export class Game {
           const tx = g.land ? g.land.x : g.x, tz = g.land ? g.land.z : g.z;
           const dx = tx - p.x, dz = tz - p.z, d = Math.hypot(dx, dz);
           const sp = 22 * dt;
-          if (d <= sp + 0.05) { p.x = tx; p.z = tz; p.y = this.groundAt(tx, tz, 999); p.vy = 0; p.mode = 'normal'; p.lock = null; this.tpFlag = false; }
-          else { p.x += (dx / d) * sp; p.z += (dz / d) * sp; p.y += ((Math.max(this.groundAt(tx, tz, 999), 0) + 1.0) - p.y) * Math.min(1, dt * 6); p.vy = 0; }
+          if (d <= sp + 0.05) { p.x = tx; p.z = tz; p.y = g.landY ?? this.groundAt(tx, tz, 999); p.vy = 0; p.mode = 'normal'; p.lock = null; this.tpFlag = false; }
+          else { p.x += (dx / d) * sp; p.z += (dz / d) * sp; p.y += ((Math.max(g.landY ?? this.groundAt(tx, tz, 999), 0) + 1.0) - p.y) * Math.min(1, dt * 6); p.vy = 0; }
         }
         break;
       }
@@ -815,6 +1000,8 @@ export class Game {
       this.collide(p.x + dirx * speed * wade * dt, p.z + dirz * speed * wade * dt, true);
     }
     p.speed = speed;
+    // footsteps
+    if (speed > 0.5 && p.grounded) { this.stepT = (this.stepT || 0) + dt * speed; if (this.stepT > 2.6) { this.stepT = 0; const onB = this.building.columnsAround(p.x, p.z, 0.3).some((c) => Math.abs(c.top - p.y) < 0.1); this.audio.play('step', { surface: onB ? 'wood' : this.inDungeon ? 'stone' : 'grass', vol: speed > 7 ? 0.09 : 0.06 }); } }
     // vertical
     if (p.mode !== 'grapple') {
       const g = this.groundAt(p.x, p.z, p.y);
@@ -830,8 +1017,10 @@ export class Game {
     // avatar
     this.player.root.position.set(p.x, p.y, p.z); this.player.root.rotation.y = p.ry;
     this.player.root.visible = !(p.inv > 0 && p.mode !== 'dead' && Math.sin(this.t * 40) > 0.3);
-    const tool = p.mode === 'gather' ? (NODE_TYPES[p.gnode.type].skill === 'woodcutting' ? 'axe' : 'pick') : null;
-    animateAvatar(this.player, { anim: this.animName(), t: p.mt, speed: speed / 5.6, charge: p.mode === 'charge' ? Math.min(1, p.mt / 0.8) : 0, tool }, dt);
+    const gd = p.mode === 'gather' && NODE_TYPES[p.gnode.type];
+    const tool = gd ? (gd.skill === 'woodcutting' ? 'axe' : gd.fish ? 'rod' : 'pick') : null;
+    const an = this.animName();
+    animateAvatar(this.player, { anim: an, t: this.animOverride && an === this.animOverride.name ? this.animOverride.mt : p.mt, speed: speed / 5.6, charge: p.mode === 'charge' ? Math.min(1, p.mt / 0.8) : 0, tool }, dt);
     // grapple chain visuals
     if (p.mode === 'grapple') {
       const g = p.gr; const hx = p.x + Math.sin(p.ry) * 0.4, hy = p.y + 1.4, hz = p.z + Math.cos(p.ry) * 0.4;
@@ -855,9 +1044,10 @@ export class Game {
   updateCamera(dt) {
     const p = this.p, c = this.cam, I = this.input;
     const look = I.consumeLook(), ck = I.camKeys();
-    c.yaw -= look.x * 0.0028 + ck.x * dt * 2.2; c.pitch += look.y * 0.0022 + ck.y * dt * 1.4;
-    if (I.wheel) { c.dist = Math.max(4, Math.min(14, c.dist + I.wheel * 0.6)); I.wheel = 0; }
-    const minP = this.inDungeon ? 0.55 : 0.05;
+    const sens = this.settings.sens || 1, inv = this.settings.invertY ? -1 : 1;
+    c.yaw -= look.x * 0.0028 * sens + ck.x * dt * 2.2; c.pitch += (look.y * 0.0022 * sens + ck.y * dt * 1.4) * inv;
+    if (I.wheel && !this.buildMode) { c.dist = Math.max(4, Math.min(14, c.dist + I.wheel * 0.6)); I.wheel = 0; }
+    const minP = this.inDungeon ? (this.dungeonId === 'mine' && p.z < -110 ? 0.15 : 0.55) : 0.05; // boss arena is open: allow a lower camera to see Magmaw
     c.pitch = Math.max(minP, Math.min(1.25, c.pitch));
     const lp = this.lockPos();
     const focus = new THREE.Vector3(p.x, p.y + 1.6, p.z);
@@ -892,7 +1082,7 @@ export class Game {
 
   camBlock(f, w) {
     const dx = w.x - f.x, dz = w.z - f.z, dy = w.y - f.y; let tMin = 1;
-    const list = this.inDungeon ? this.dungeon.colliders : this.world.colliders;
+    const list = this.inDungeon ? this.D.colliders : this.world.colliders;
     const a = dx * dx + dz * dz; if (a < 1e-6) return 1;
     for (const c of list) {
       if (!c.cam || c.disabled) continue;
@@ -920,40 +1110,43 @@ export class Game {
   // ---------------- HUD ----------------
   updateHUD() {
     const p = this.p;
-    UI.hearts(p.hp, this.maxHp); UI.stamina(p.stam / 100, p.stam < 10);
-    const z = this.zoneName();
-    if (z !== this.lastZone) { this.lastZone = z; UI.zone(z === 'village' ? '🛡 Oakhollow Village · safe' : z === 'dungeon' ? '☠ The Hollow Barrow' : '🌲 The Wilds · build & fight', z); if (z === 'wild' && this.lastZoneShown === 'village') UI.toast('Entering the Wilds', ''); this.lastZoneShown = z; }
-    const st = this.questStage();
-    let tgt = null;
-    const D = this.dungeon;
-    if (st === 0 || st === 6) tgt = this.inDungeon ? { x: D.exitA.x, z: D.exitA.z } : { x: 0, z: 1.5 };
-    else if (st === 1) tgt = this.inDungeon ? null : this.world.entrance;
-    else if (this.inDungeon) tgt = st === 2 ? D.chest : st === 3 ? D.lever : st === 4 ? { x: D.chest.x, z: -82 } : st === 5 ? D.bossChest : null;
-    else if (st >= 2 && st <= 5) tgt = this.world.entrance;
+    UI.hearts(p.hp, this.maxHp); UI.stamina(p.stam / 100, p.stam < 10); UI.fadeMeter(this.s.fade || 0);
+    const z = this.zoneName(), zk = z + (this.dungeonId || '');
+    if (zk !== this.lastZone) {
+      this.lastZone = zk;
+      UI.zone(z === 'village' ? '🛡 Oakhollow Village · safe' : z === 'camp' ? '🔥 Ashfall Camp · safe' : z === 'ember' ? '🌋 Emberfall Ridge' : z === 'dungeon' ? (this.dungeonId === 'mine' ? '⛏ Cinderdeep Mine' : '☠ The Hollow Barrow') : '🌲 The Wilds · build & fight', z);
+      if (z === 'ember' && this.lastZoneShown === 'camp' && !this.s.flags.seenRidge) { this.s.flags.seenRidge = true; UI.banner('Emberfall Ridge', 'Ash, lava and the creeping Fade'); }
+      if (z === 'camp' && this.s.flags.q2_start && !this.s.flags.q2_camp) UI.toast('Ashfall Camp — find Scout Corin', '');
+      this.lastZoneShown = z;
+    }
+    UI.setText('#me-name', this.s.name); UI.setText('#totalbadge', `⭐ ${this.totalLevel()}`); UI.setText('#gold', `🪙 ${this.s.gold.toLocaleString('en-AU')}`);
+    const q = this.s.quick, qk = q === 'bomb' ? '💣' : q && this.s.inv[q] > 0 ? `${ITEMS[q].icon}×${this.s.inv[q]}` : '';
+    UI.setText('#quickslot', qk); UI.show('#quickslot', !!qk);
+    UI.setText('#bombcount', `💣 ${this.s.inv.bomb || 0}`); UI.show('#bombcount', !!this.s.flags.q3_bombs);
+    const qh = this.questHud(), tgt = qh.tgt;
     if (tgt) {
       const dx = tgt.x - p.x, dz = tgt.z - p.z;
       const ang = Math.atan2(dx, dz) - Math.atan2(-Math.sin(this.cam.yaw), -Math.cos(this.cam.yaw));
-      UI.quest(QUEST_TEXT[st], -ang * 180 / Math.PI - 90, Math.hypot(dx, dz));
-    } else UI.quest(QUEST_TEXT[st], null);
-    for (const n of this.npcs) n.mark.visible = (n.id === 'elder' && (st === 0 || st === 6));
-    // prompt
+      UI.quest(qh.title, qh.text, -ang * 180 / Math.PI - 90, Math.hypot(dx, dz));
+      const far = Math.hypot(dx, dz) > 12;
+      this.beacon.visible = far; if (far) this.beacon.position.set(tgt.x, this.terrainH(tgt.x, tgt.z) + 20, tgt.z);
+    } else { UI.quest(qh.title, qh.text, null); this.beacon.visible = false; }
+    for (const n of this.npcs) { const m = this.npcMarker(n.id); n.mark.visible = m === '!'; n.qmark.visible = m === '?'; const b = Math.sin(this.t * 3) * 0.12; n.mark.position.y = n.qmark.position.y = n.y + 3.1 + b; }
     let pr = null;
     if (!this.inDialog && !UI.panelOpen() && (p.mode === 'normal' || p.mode === 'block')) {
       if (this.buildMode) pr = null;
       else { const it = this.findInteract(); if (it) pr = `<kbd>${this.touch ? '✋' : 'E'}</kbd>${it.label}`; this.currentInteract = it; }
     }
-    if (p.mode === 'gather') pr = `<kbd>…</kbd>${NODE_TYPES[p.gnode.type].skill === 'woodcutting' ? 'Chopping' : 'Mining'}…`;
+    if (p.mode === 'gather') { const d = NODE_TYPES[p.gnode.type]; pr = `<kbd>…</kbd>${d.skill === 'woodcutting' ? 'Chopping' : d.fish ? 'Fishing' : 'Mining'}…`; }
     UI.prompt(pr);
-    // ghost
+    if (this.nameTag) { this.nameTag.position.set(p.x, p.y + 2.55, p.z); this.nameTag.visible = !this.touch || true; }
     if (this.buildMode) {
-      const { gx, gz, k } = this.buildTarget(), [cx, cz] = cellCenter(gx, gz), piece = PIECES[this.piece];
-      const stack = this.building.stacks.get(k) || [];
-      const okk = !buildRefusal(gx, gz, stack.length) && this.has(piece.cost);
-      const gh = this.building.ghost; gh.geometry = this.building.geo[this.piece];
-      gh.position.set(cx, this.building.top(gx, gz) + piece.h / 2, cz); gh.material.color.setHex(okk ? 0x40ff60 : 0xff4040);
+      const { gx, gz } = this.buildTarget(), [cx, cz] = cellCenter(gx, gz);
+      const okk = !this.pieceRefusal(gx, gz, this.piece) && this.has(this.costFor(this.piece));
+      this.building.setGhost(this.piece, this.rot, cx, this.building.top(gx, gz), cz, okk);
+      this.building.ghost.visible = true;
     }
   }
-
   updateRemotes(dt) {
     const k = 1 - Math.exp(-dt * 12);
     for (const r of this.remotes.values()) {
@@ -983,21 +1176,49 @@ export class Game {
     };
     loop();
   }
+  musicTrack() {
+    if (this.phase !== 'play') return 'village';
+    if (this.visionOn) return 'vael';
+    if (this.dungeonId === 'mine') { const m = this.msim.enemies.get('m_magmaw'); return m && m.alive && m.state !== 'idle' ? 'boss' : 'mine'; }
+    if (this.dungeonId === 'barrow') { const w = this.dsim.enemies.get('d_warden'); return w && w.alive && w.state !== 'idle' && w.state !== 'return' ? 'boss' : 'barrow'; }
+    const z = this.zoneName(); return z === 'village' ? 'village' : z === 'camp' ? 'camp' : z === 'ember' ? 'ember' : 'wild';
+  }
   frame(dt) {
     if (this.phase === 'play') {
-      this.updatePlayer(dt); this.updateEnemies(dt); this.updateRemotes(dt); this.updateNodes(); this.sendState(dt); this.updateHUD();
+      this.updatePlayer(dt); this.updateEnemies(dt); this.updateRemotes(dt); this.updateNodes(); this.sendState(dt);
+      this.updateBombs(dt); this.updateFlashes(dt); this.updateProjs(dt); this.updateHazards(dt); this.updateTraps(dt); this.updateLoot(dt); this.updatePets(dt);
+      this.updateHUD();
     } else {
-      this.p.ry = 0.4; // camera angle for the creation close-up
+      this.p.ry = 0.4;
       this.player.root.position.set(this.p.x, this.p.y, this.p.z);
       this.player.root.rotation.y = Math.sin(this.t * 0.6) * 0.6 + 0.4;
       animateAvatar(this.player, { anim: 'idle', t: 0, speed: 0 }, dt);
     }
-    for (const n of this.npcs) animateAvatar(n.av, { anim: 'idle', t: 0, speed: 0 }, dt);
+    // NPCs: idle fidgets, face + gesture while talking to you
+    for (const n of this.npcs) {
+      const talking = this.inDialog && this.talkNpc === n;
+      const near = this.phase === 'play' && Math.hypot(n.x - this.p.x, n.z - this.p.z) < 5;
+      if (talking || near) n.av.root.rotation.y = lerpAngle(n.av.root.rotation.y, Math.atan2(this.p.x - n.x, this.p.z - n.z), Math.min(1, dt * 5));
+      else n.av.root.rotation.y = lerpAngle(n.av.root.rotation.y, n.ry0, Math.min(1, dt * 2));
+      const cyc = (this.t + n.phase) % 12;
+      const anim = talking ? 'talk' : near && cyc < 1.6 && !n.waved ? 'wave' : cyc > 7 && cyc < 10 ? 'idle2' : 'idle';
+      if (near && cyc >= 1.6) n.waved = true; if (!near) n.waved = false;
+      n.av.t = (n.av.t || 0) + dt;
+      animateAvatar(n.av, { anim, t: cyc, speed: 0 }, dt);
+    }
+    for (const a of this.altars) a.cry.rotation.y = this.t * 1.5;
     this.updateCamera(dt);
-    this.world.updateWater(this.t); this.dungeon.update(this.t, dt); this.particles.update(dt);
+    this.world.updateWater(this.t); this.dungeon.update(this.t, dt); this.particles.update(dt); this.building.update(this.t, dt);
+    const did = this.phase === 'play' ? this.dungeonId : null;
+    this.mine.group.visible = did === 'mine'; this.dungeon.group.visible = did !== 'mine';
+    if (did === 'mine') for (const ev of this.mine.update(this.t, dt)) this.onMineEvent(ev);
+    const focus = new THREE.Vector3(this.p.x, this.p.y, this.p.z);
+    this.ridge.update(this.t, dt, focus, this.zoneName());
     const tod = this.todOverride ?? ((Date.now() / 1000 / 600 + 0.12) % 1);
-    this.world.setTime(tod, new THREE.Vector3(this.p.x, this.p.y, this.p.z), this.inDungeon);
+    this.world.setTime(tod, focus, this.inDungeon, did || this.zoneName());
+    this.audio.setTrack(this.musicTrack());
     this.input.endFrame();
     this.renderer.render(this.scene, this.camera);
   }
 }
+Object.assign(Game.prototype, RPG, Story, Systems);

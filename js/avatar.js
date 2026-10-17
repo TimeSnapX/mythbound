@@ -30,6 +30,7 @@ export function makeTool(kind) {
   const g = new THREE.Group();
   const handle = box(0.06, 0.8, 0.06, mat(0x7a5432)); handle.position.y = 0.35; g.add(handle);
   if (kind === 'axe') { const head = box(0.06, 0.22, 0.3, mat(0x9aa0a8)); head.position.set(0, 0.68, 0.12); g.add(head); }
+  else if (kind === 'rod') { handle.scale.y = 2; handle.position.y = 0.7; const line = box(0.01, 0.9, 0.01, mat(0xeeeeee)); line.position.set(0, 1.0, 0.3); line.rotation.x = 0.5; g.add(line); }
   else { const head = box(0.06, 0.08, 0.62, mat(0x9aa0a8)); head.position.set(0, 0.72, 0); g.add(head); }
   return g;
 }
@@ -83,7 +84,35 @@ export function buildAvatar(look = {}) {
   const glow = new THREE.Mesh(new THREE.OctahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xfff2a0, transparent: true, opacity: 0.0 }));
   swordHolder.add(glow); glow.position.y = 1.1;
 
-  const A = { root, body, hips, torso, head, armR, armL, legR, legL, swordHolder, shield, glow, axe, pick, M, hair, cap, t: 0, look: {} };
+  // v2 gear visuals: helmet, chest plate, leg plates, bow, fishing rod, skill cape
+  const gearM = { head: mat(0xd08a3c), body: mat(0xd08a3c), legs: mat(0xc07a30), bow: mat(0x9a6a3a), cape: mat(0x2f8f3a), emblem: new THREE.MeshBasicMaterial({ color: 0xffe9a8 }) };
+  const helm = new THREE.Group(); head.add(helm);
+  const hb = box(0.48, 0.26, 0.48, gearM.head); hb.position.y = 0.38; helm.add(hb);
+  const hn = box(0.08, 0.2, 0.06, gearM.head); hn.position.set(0, 0.2, 0.25); helm.add(hn);
+  const plate = box(0.64, 0.5, 0.4, gearM.body); plate.position.y = 0.38; torso.add(plate);
+  const pauld = [-1, 1].map((sx) => { const p = box(0.22, 0.14, 0.24, gearM.body); p.position.set(0.39 * sx, 0.64, 0); torso.add(p); return p; });
+  const legPlates = [legR, legL].map((lg) => { const p = box(0.23, 0.42, 0.25, gearM.legs); p.position.y = -0.24; lg.add(p); return p; });
+  const bow = new THREE.Group(); bow.position.set(0.05, 0.45, -0.24); bow.rotation.z = 0.7; torso.add(bow);
+  for (const [y, rx] of [[0.3, 0.35], [-0.3, -0.35]]) { const limb = box(0.05, 0.62, 0.05, gearM.bow); limb.position.set(0, y, 0.08); limb.rotation.x = rx; bow.add(limb); }
+  const str = box(0.015, 1.15, 0.015, mat(0xeeeeee)); str.position.z = -0.02; bow.add(str);
+  const rod = makeTool('rod'); rod.rotation.x = Math.PI / 2; rod.visible = false; armR.hand.add(rod);
+  const cape = new THREE.Group(); cape.position.set(0, 0.62, -0.2); torso.add(cape);
+  const cloth = box(0.56, 0.95, 0.04, gearM.cape); cloth.position.y = -0.46; cape.add(cloth);
+  const emb = new THREE.Mesh(new THREE.OctahedronGeometry(0.1, 0), gearM.emblem); emb.position.set(0, -0.35, -0.04); emb.scale.z = 0.3; cape.add(emb);
+  const embRing = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.025, 4, 10), gearM.emblem); embRing.position.set(0, -0.35, -0.04); cape.add(embRing);
+  helm.visible = plate.visible = cape.visible = bow.visible = false; pauld.forEach((p) => (p.visible = false)); legPlates.forEach((p) => (p.visible = false));
+  const A = { root, body, hips, torso, head, armR, armL, legR, legL, swordHolder, shield, glow, axe, pick, rod, M, hair, cap, t: 0, look: {}, bow, cape, gearM };
+  // gear = { head:{color}|null, body, legs, shield:{color}, bow:{color}|null, cape:{color, emblem}|null }
+  A.setGear = (g = {}) => {
+    helm.visible = !!g.head; if (g.head) gearM.head.color.setHex(g.head.color);
+    plate.visible = !!g.body; pauld.forEach((p) => (p.visible = !!g.body)); if (g.body) gearM.body.color.setHex(g.body.color);
+    legPlates.forEach((p) => (p.visible = !!g.legs)); if (g.legs) gearM.legs.color.setHex(g.legs.color);
+    M.shield.color.setHex(g.shield ? g.shield.color : 0x7a5a3a);
+    bow.visible = !!g.bow; if (g.bow) gearM.bow.color.setHex(g.bow.color);
+    cape.visible = !!g.cape; if (g.cape) { gearM.cape.color.setHex(g.cape.color); gearM.emblem.color.setHex(g.cape.emblem || 0xffe9a8); }
+    cap.visible = !g.head && (A.look.hair % HAIR_STYLES.length) !== 2;
+    A.gear = g;
+  };
   A.setLook = (l) => {
     A.look = { skin: 0, hair: 0, hairColor: 0, tunic: 0, sword: 'wood', ...l };
     M.skin.color.setHex(SKINS[A.look.skin % SKINS.length]);
@@ -94,7 +123,7 @@ export function buildAvatar(look = {}) {
     if (style === 0) { const t = box(0.46, 0.14, 0.46, M.hair); t.position.y = 0.43; const b = box(0.46, 0.3, 0.12, M.hair); b.position.set(0, 0.3, -0.18); hair.add(t, b); }
     if (style === 1) { const t = box(0.46, 0.14, 0.46, M.hair); t.position.y = 0.43; const b = box(0.48, 0.62, 0.14, M.hair); b.position.set(0, 0.14, -0.2); const s1 = box(0.08, 0.4, 0.3, M.hair); s1.position.set(-0.23, 0.24, -0.04); const s2 = s1.clone(); s2.position.x = 0.23; hair.add(t, b, s1, s2); }
     if (style === 2) { for (let i = 0; i < 7; i++) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.32, 4), M.hair); const a = (i / 7) * Math.PI * 2; c.position.set(Math.cos(a) * 0.14, 0.5, Math.sin(a) * 0.14 - 0.03); c.rotation.set(Math.sin(a) * 0.6, 0, -Math.cos(a) * 0.6); c.castShadow = true; hair.add(c); } }
-    cap.visible = style !== 2;
+    cap.visible = style !== 2 && !(A.gear && A.gear.head);
     A.setSword(A.look.sword);
   };
   A.setSword = (kind) => {
@@ -126,7 +155,10 @@ export function animateAvatar(A, s, dt) {
   }
   A.axe.visible = s.anim === 'gather' && s.tool === 'axe';
   A.pick.visible = s.anim === 'gather' && s.tool === 'pick';
-  A.swordHolder.visible = s.anim !== 'gather';
+  if (A.rod) A.rod.visible = s.anim === 'gather' && s.tool === 'rod';
+  A.swordHolder.visible = s.anim !== 'gather' && s.anim !== 'shoot' && s.anim !== 'cast';
+  if (A.bow) { const shooting = s.anim === 'shoot'; if (A.gear && A.gear.bow) A.bow.visible = true; A.bow.position.set(shooting ? 0.5 : 0.05, shooting ? 0.62 : 0.45, shooting ? 0.45 : -0.24); A.bow.rotation.set(0, shooting ? Math.PI / 2 : 0, shooting ? 0 : 0.7); }
+  if (A.cape && A.cape.visible) A.cape.rotation.x = 0.08 + Math.min(0.6, (s.speed || 0) * 0.35) + Math.sin(A.t * 3) * 0.03;
   let glow = 0, bodyRotDirect = null;
   const t = s.t || 0;
   switch (s.anim) {
@@ -142,6 +174,13 @@ export function animateAvatar(A, s, dt) {
     case 'dead': tgt.hipsY = 0.25; tgt.torsoX = -1.3; tgt.rAx = -2.5; tgt.lAx = -2.5; break;
     case 'grapple': tgt.rAx = -1.6; tgt.lAx = -1.6; tgt.rL = -0.5; tgt.lL = 0.3; break;
     case 'jump': tgt.rL = -0.6; tgt.lL = 0.4; tgt.rAx = -1.2; tgt.lAx = -1.2; break;
+    case 'shoot': { const p = Math.min(1, t / 0.25); tgt.lAx = -1.55; tgt.lAy = 0.2; tgt.rAx = -1.5; tgt.rAy = lerp(0.2, -0.6, p); tgt.torsoY = -0.5; break; }
+    case 'cast': { const p = Math.min(1, t / 0.3); tgt.rAx = lerp(-2.6, -1.4, p); tgt.lAx = lerp(-2.6, -1.4, p); tgt.torsoX = -0.1; glow = 1 - p; break; }
+    case 'throw': { const p = Math.min(1, t / 0.3); tgt.rAx = lerp(-2.8, -0.6, ease(p)); tgt.torsoX = lerp(-0.2, 0.2, p); break; }
+    case 'eat': tgt.rAx = -2.2; tgt.rAy = -0.6; tgt.headX = 0.2; break;
+    case 'talk': { tgt.rAx = -0.7 + Math.sin(A.t * 5) * 0.35; tgt.rAz = 0.3; tgt.lAx = -0.3 + Math.sin(A.t * 3.7) * 0.2; tgt.headX = Math.sin(A.t * 4) * 0.08; tgt.torsoY = Math.sin(A.t * 1.5) * 0.12; break; }
+    case 'wave': { tgt.rAx = -2.9; tgt.rAz = 0.4 + Math.sin(A.t * 9) * 0.4; break; }
+    case 'idle2': { tgt.headX = Math.sin(A.t * 0.7) * 0.12; tgt.torsoY = Math.sin(A.t * 0.4) * 0.25; tgt.lAx = Math.sin(A.t * 0.9) * 0.08; tgt.rAx = -0.15; break; }
   }
   if (s.anim !== 'roll') { A.body.rotation.x = lerp(A.body.rotation.x % (Math.PI * 2), 0, k); A.body.position.y = lerp(A.body.position.y, 0, k); }
   if (bodyRotDirect !== null) A.body.rotation.y = bodyRotDirect; else A.body.rotation.y = lerp(A.body.rotation.y, 0, k);

@@ -1,6 +1,6 @@
 // Overworld: terrain, water, sky + day/night, village, resource nodes, barrow entrance, colliders.
 import * as THREE from 'three';
-import { islandHeight, fbm, VILLAGE, ENTRANCE, generateNodes, NODE_TYPES } from './shared.js';
+import { islandHeight, terrainHeight, fbm, VILLAGE, ENTRANCE, BRIDGE, generateNodes, NODE_TYPES } from './shared.js';
 
 export const mat = (color, extra = {}) => new THREE.MeshLambertMaterial({ color, flatShading: true, ...extra });
 const MATS = {};
@@ -85,9 +85,9 @@ export function buildWorld(scene, { shadows = true } = {}) {
 
   // ---------- terrain ----------
   const SIZE = 320, SEG = 128;
-  const geo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG).rotateX(-Math.PI / 2).toNonIndexed();
+  const geo = new THREE.PlaneGeometry(310, SIZE, 124, SEG).rotateX(-Math.PI / 2).translate(-5, 0, 0).toNonIndexed();
   const pos = geo.attributes.position, colors = new Float32Array(pos.count * 3);
-  for (let i = 0; i < pos.count; i++) pos.setY(i, islandHeight(pos.getX(i), pos.getZ(i)));
+  for (let i = 0; i < pos.count; i++) pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
   const col = new THREE.Color();
   const pathDist = (x, z) => {
     // dirt paths: village cross + road to the barrow
@@ -96,6 +96,8 @@ export function buildWorld(scene, { shadows = true } = {}) {
     if (dv > VILLAGE.r + 22) d = 99;
     if (z < VILLAGE.z && z > ENTRANCE.z) d = Math.min(d, Math.abs(x - Math.sin(z * 0.05) * 6));
     if (dv < 7) d = Math.min(d, Math.abs(dv - 5));
+    // v2: road from the east gate to the Ember Bridge
+    if (x > VILLAGE.x + VILLAGE.r - 2 && x < BRIDGE.x0 + 2) { const t = (x - (VILLAGE.x + VILLAGE.r)) / (BRIDGE.x0 - VILLAGE.x - VILLAGE.r); d = Math.min(d, Math.abs(z - (VILLAGE.z + (BRIDGE.z - VILLAGE.z) * t + Math.sin(t * Math.PI) * 6))); }
     return d;
   };
   for (let i = 0; i < pos.count; i += 3) {
@@ -118,7 +120,7 @@ export function buildWorld(scene, { shadows = true } = {}) {
   terrain.receiveShadow = true; scene.add(terrain); W.terrain = terrain;
 
   // ---------- water ----------
-  const wgeo = new THREE.PlaneGeometry(700, 700, 70, 70).rotateX(-Math.PI / 2);
+  const wgeo = new THREE.PlaneGeometry(820, 720, 70, 60).rotateX(-Math.PI / 2).translate(60, 0, 0);
   const water = new THREE.Mesh(wgeo, new THREE.MeshPhongMaterial({ color: 0x2f86c4, transparent: true, opacity: 0.82, flatShading: true, shininess: 80, specular: 0x88bbff }));
   water.position.y = -0.15; scene.add(water); W.water = water;
   const wbase = Float32Array.from(wgeo.attributes.position.array);
@@ -144,16 +146,20 @@ export function buildWorld(scene, { shadows = true } = {}) {
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
   const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false, fog: false, transparent: true }));
   scene.add(stars);
-  const C = { night: new THREE.Color(0x0b1233), dusk: new THREE.Color(0xe8946a), day: new THREE.Color(0x9fd0f0), dun: new THREE.Color(0x0d0a08) };
+  const C = { night: new THREE.Color(0x0b1233), dusk: new THREE.Color(0xe8946a), day: new THREE.Color(0x9fd0f0), dun: new THREE.Color(0x0d0a08), mine: new THREE.Color(0x1a0904), ember: new THREE.Color(0x9a7a6a), fade: new THREE.Color(0xb8bcc0) };
   const tmp = new THREE.Color();
-  W.setTime = (tod, focus, inDungeon) => {
+  W.tint = { ember: 0, fade: 0 };
+  W.setTime = (tod, focus, inDungeon, where = '') => {
     const elev = Math.sin(tod * Math.PI * 2);
     const day = THREE.MathUtils.smoothstep(elev, -0.18, 0.3);
     const duskAmt = Math.max(0, 1 - Math.abs(elev) * 4) * 0.7;
     tmp.copy(C.night).lerp(C.day, day).lerp(C.dusk, duskAmt * (1 - day * 0.5));
-    if (inDungeon) tmp.copy(C.dun);
+    // smooth zone tints: Emberfall haze, Fade fog
+    W.tint.ember += ((where === 'ember' || where === 'camp' ? 1 : 0) - W.tint.ember) * 0.05;
+    tmp.lerp(C.ember, W.tint.ember * 0.55 * (0.4 + day * 0.6)).lerp(C.fade, W.tint.fade * 0.7);
+    if (inDungeon) tmp.copy(where === 'mine' ? C.mine : C.dun);
     scene.background.copy(tmp); scene.fog.color.copy(tmp);
-    scene.fog.near = inDungeon ? 8 : 40; scene.fog.far = inDungeon ? 55 : 120 + day * 70;
+    scene.fog.near = inDungeon ? 8 : 40 - W.tint.ember * 15 - W.tint.fade * 25; scene.fog.far = inDungeon ? (where === 'mine' ? 60 : 55) : 120 + day * 70 - W.tint.ember * 30 - W.tint.fade * 60;
     const a = tod * Math.PI * 2;
     const sdir = new THREE.Vector3(Math.cos(a) * 0.8, Math.sin(a), 0.45).normalize();
     const lightDir = elev > -0.05 ? sdir : sdir.clone().negate();
@@ -161,7 +167,7 @@ export function buildWorld(scene, { shadows = true } = {}) {
     sun.intensity = inDungeon ? 0.25 : elev > -0.05 ? 0.3 + day * 1.4 : 0.25;
     sun.color.setHex(elev > -0.05 ? 0xfff1d0 : 0x8fa6ff);
     hemi.intensity = inDungeon ? 0.55 : 0.35 + day * 0.6;
-    hemi.color.setHex(inDungeon ? 0xffb070 : day > 0.5 ? 0xcfe8ff : 0x6f80c0);
+    hemi.color.setHex(inDungeon ? (where === 'mine' ? 0xff9050 : 0xffb070) : day > 0.5 ? (W.tint.ember > 0.5 ? 0xffd8c0 : 0xcfe8ff) : 0x6f80c0);
     hemi.groundColor.setHex(inDungeon ? 0x302018 : 0x4a5a30);
     sunBall.position.copy(focus).addScaledVector(sdir, 300); moonBall.position.copy(focus).addScaledVector(sdir, -300);
     sunBall.visible = moonBall.visible = !inDungeon;
@@ -169,6 +175,7 @@ export function buildWorld(scene, { shadows = true } = {}) {
     water.visible = terrain.visible = !inDungeon;
     W.night = 1 - day;
     for (const l of W.lamps) l.material.color.setHex(day < 0.5 ? 0xffd27a : 0x9a8a60);
+    W.onTime?.(tod, day, focus, inDungeon);
     for (const l of W.lampLights) l.intensity = day < 0.5 ? 18 * (1 - day * 2) : 0;
   };
 
@@ -241,6 +248,24 @@ export function buildWorld(scene, { shadows = true } = {}) {
     village.add(head); W.lamps.push(head); colliders.push({ c: 1, x: lx, z: lz, r: 0.25 });
   }
   for (const [lx, lz] of [[0, 4], [-12, 12], [0, 28]]) { const pl = new THREE.PointLight(0xffc070, 0, 22, 1.6); pl.position.set(lx, H(lx, lz) + 3, lz); scene.add(pl); W.lampLights.push(pl); }
+  // v2: cooking range (stone oven) + workbench (Pip's yard)
+  const rx = 6.5, rz = 21;
+  const range = new THREE.Group(); range.position.set(rx, H(rx, rz), rz); village.add(range);
+  range.add(mesh(new THREE.BoxGeometry(1.8, 1.1, 1.3), 0x8d8f94, 0, 0.55, 0));
+  range.add(mesh(new THREE.BoxGeometry(1.2, 0.5, 0.1), new THREE.MeshBasicMaterial({ color: 0xff7a20 }), 0, 0.55, 0.66, false));
+  range.add(mesh(new THREE.CylinderGeometry(0.2, 0.25, 1.2, 6), 0x6f6f72, 0.5, 1.7, -0.3));
+  colliders.push({ minx: rx - 0.9, maxx: rx + 0.9, minz: rz - 0.65, maxz: rz + 0.65 });
+  const bx = 11, bz = 28.5;
+  const bench = new THREE.Group(); bench.position.set(bx, H(bx, bz), bz); bench.rotation.y = -0.4; village.add(bench);
+  bench.add(mesh(new THREE.BoxGeometry(1.8, 0.15, 0.9), 0xa07040, 0, 0.9, 0));
+  for (const [px, pz] of [[-0.8, -0.35], [0.8, -0.35], [-0.8, 0.35], [0.8, 0.35]]) bench.add(mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), 0x6b4a2e, px, 0.45, pz));
+  bench.add(mesh(new THREE.BoxGeometry(0.5, 0.1, 0.3), 0x9aa0a8, 0.3, 1.02, 0.1));
+  colliders.push({ c: 1, x: bx, z: bz, r: 0.9 });
+  W.stations.push({ kind: 'range', x: rx, z: rz + 1.3, label: 'Use Cooking Range', obj: range }, { kind: 'workbench', x: bx, z: bz, label: 'Use Workbench (Craft)', obj: bench });
+  const esign = new THREE.Group(); esign.position.set(29, H(29, 6), 6); village.add(esign);
+  esign.add(mesh(new THREE.BoxGeometry(0.15, 1.8, 0.15), 0x6b4a2e, 0, 0.9, 0));
+  esign.add(mesh(new THREE.BoxGeometry(0.1, 0.6, 1.6), 0xc49a62, 0, 1.6, 0));
+  const el = makeLabel('Ember Bridge →', '#ffb070', 0.8); el.position.set(29, H(29, 6) + 2.5, 6); scene.add(el);
   // signposts at the south gate
   const sign = new THREE.Group(); sign.position.set(3, H(3, 37.5), 37.5); village.add(sign);
   sign.add(mesh(new THREE.BoxGeometry(0.15, 1.8, 0.15), 0x6b4a2e, 0, 0.9, 0));
@@ -266,8 +291,19 @@ export function buildWorld(scene, { shadows = true } = {}) {
     oak: [coloredGeometry([{ geo: new THREE.CylinderGeometry(0.29, 0.42, 2.1, 5), color: 0x6b4a2e, pos: [0, 1.05, 0] }, { geo: new THREE.IcosahedronGeometry(1.8, 0), color: 0x4f8f2f, pos: [0, 3.2, 0], scale: [1.2, 0.9, 1.2] }, { geo: new THREE.IcosahedronGeometry(1.08, 0), color: 0x5a9a36, pos: [0.8, 3.9, 0.4] }]),
       coloredGeometry([{ geo: new THREE.CylinderGeometry(0.36, 0.44, 0.4, 5), color: 0x6b4a2e, pos: [0, 0.2, 0] }])],
   };
-  const fleckColor = { copper: 0xd77a2a, tin: 0xe8eef0, iron: 0x7a2a1a };
-  for (const t of ['rock', 'copper', 'tin', 'iron']) {
+  NODE_GEO.ashtree = [coloredGeometry([{ geo: new THREE.CylinderGeometry(0.2, 0.34, 2.6, 5), color: 0x2e2622, pos: [0, 1.3, 0] }, { geo: new THREE.CylinderGeometry(0.08, 0.12, 1.3, 4), color: 0x2e2622, pos: [0.45, 2.3, 0], rot: [0, 0, -0.8] }, { geo: new THREE.CylinderGeometry(0.07, 0.1, 1.1, 4), color: 0x2e2622, pos: [-0.4, 2.0, 0.2], rot: [0.3, 0, 0.9] }, { geo: new THREE.IcosahedronGeometry(0.9, 0), color: 0x6a6460, pos: [0, 3.0, 0], scale: [1.2, 0.7, 1.2] }, { geo: new THREE.IcosahedronGeometry(0.35, 0), color: 0xff6a20, pos: [0.15, 0.25, 0.3] }]),
+    coloredGeometry([{ geo: new THREE.CylinderGeometry(0.3, 0.36, 0.4, 5), color: 0x2e2622, pos: [0, 0.2, 0] }])];
+  const fishGeo = coloredGeometry([{ geo: new THREE.TorusGeometry(0.9, 0.08, 3, 12), color: 0xcfefff, pos: [0, 0, 0], rot: [Math.PI / 2, 0, 0] }, { geo: new THREE.TorusGeometry(0.45, 0.06, 3, 10), color: 0xffffff, pos: [0, 0.02, 0], rot: [Math.PI / 2, 0, 0] }, { geo: new THREE.BoxGeometry(0.12, 0.12, 0.12), color: 0xffffff, pos: [0.6, 0.06, 0.3] }, { geo: new THREE.BoxGeometry(0.1, 0.1, 0.1), color: 0xffffff, pos: [-0.5, 0.06, -0.4] }]);
+  const noGeo = coloredGeometry([{ geo: new THREE.BoxGeometry(0.01, 0.01, 0.01), color: 0x2f86c4, pos: [0, -1, 0] }]);
+  for (const t of ['shrimp', 'trout', 'eel']) NODE_GEO[t] = [fishGeo, noGeo];
+  NODE_GEO.essence = [coloredGeometry([{ geo: new THREE.DodecahedronGeometry(0.9, 0), color: 0xb8c8e8, pos: [0, 0.5, 0], scale: [1, 0.8, 1] }, { geo: new THREE.OctahedronGeometry(0.35, 0), color: 0x7ab0ff, pos: [0.3, 1.1, 0.1], scale: [0.7, 1.6, 0.7] }, { geo: new THREE.OctahedronGeometry(0.25, 0), color: 0x9ac8ff, pos: [-0.35, 0.95, -0.2], scale: [0.7, 1.4, 0.7] }]),
+    coloredGeometry([{ geo: new THREE.DodecahedronGeometry(0.8, 0), color: 0x8a94a8, pos: [0, 0.15, 0], scale: [0.8, 0.25, 0.8] }])];
+  const moundG = (c) => ({ geo: new THREE.DodecahedronGeometry(0.8, 0), color: c, pos: [0, 0.05, 0], scale: [1.2, 0.35, 1.2] });
+  NODE_GEO.burrow = [coloredGeometry([moundG(0x7a5a3a), { geo: new THREE.CylinderGeometry(0.3, 0.3, 0.1, 6), color: 0x1a1008, pos: [0.2, 0.3, 0.2] }, { geo: new THREE.BoxGeometry(0.1, 0.25, 0.1), color: 0xd0c8b0, pos: [-0.5, 0.25, 0.4] }]), coloredGeometry([moundG(0x6a4a2a)])];
+  NODE_GEO.nest = [coloredGeometry([{ geo: new THREE.TorusGeometry(0.5, 0.18, 4, 8), color: 0x7a6040, pos: [0, 0.18, 0], rot: [Math.PI / 2, 0, 0] }, { geo: new THREE.SphereGeometry(0.13, 5, 4), color: 0xf0e8d0, pos: [0.1, 0.22, 0] }, { geo: new THREE.SphereGeometry(0.12, 5, 4), color: 0xe8d8c0, pos: [-0.12, 0.22, 0.08] }, { geo: new THREE.BoxGeometry(0.06, 0.06, 0.4), color: 0xffffff, pos: [0.4, 0.4, 0], rot: [0.5, 0.3, 0] }]), coloredGeometry([{ geo: new THREE.TorusGeometry(0.5, 0.18, 4, 8), color: 0x5a4a30, pos: [0, 0.18, 0], rot: [Math.PI / 2, 0, 0] }])];
+  NODE_GEO.trail = [coloredGeometry([{ geo: new THREE.BoxGeometry(2.2, 0.06, 0.9), color: 0x6a5232, pos: [0, 0.03, 0] }, { geo: new THREE.BoxGeometry(0.16, 0.08, 0.2), color: 0x3a2a1a, pos: [-0.6, 0.06, 0.15] }, { geo: new THREE.BoxGeometry(0.16, 0.08, 0.2), color: 0x3a2a1a, pos: [0.1, 0.06, -0.15] }, { geo: new THREE.BoxGeometry(0.16, 0.08, 0.2), color: 0x3a2a1a, pos: [0.7, 0.06, 0.15] }, { geo: new THREE.IcosahedronGeometry(0.6, 0), color: 0x3f8a3a, pos: [-1.3, 0.35, -0.6] }]), coloredGeometry([{ geo: new THREE.BoxGeometry(2.2, 0.05, 0.9), color: 0x5a4a2e, pos: [0, 0.03, 0] }])];
+  const fleckColor = { copper: 0xd77a2a, tin: 0xe8eef0, iron: 0x7a2a1a, coal: 0x111111 };
+  for (const t of ['rock', 'copper', 'tin', 'iron', 'coal']) {
     const parts = [{ geo: new THREE.DodecahedronGeometry(1, 0), color: t === 'rock' ? 0x8d8f94 : 0x77777a, pos: [0, 0.55, 0], scale: [1.1, 0.8, 1] }];
     if (fleckColor[t]) for (let i = 0; i < 5; i++) parts.push({ geo: new THREE.BoxGeometry(0.26, 0.26, 0.26), color: fleckColor[t], pos: [Math.cos(i * 1.3) * 0.75, 0.5 + (i % 3) * 0.2, Math.sin(i * 1.3) * 0.7], rot: [i, i * 2, 0] });
     NODE_GEO[t] = [coloredGeometry(parts), coloredGeometry([{ geo: new THREE.DodecahedronGeometry(1, 0), color: 0x6a6a6c, pos: [0, 0.15, 0], scale: [0.8, 0.25, 0.8] }])];
@@ -277,13 +313,14 @@ export function buildWorld(scene, { shadows = true } = {}) {
   const dummy = new THREE.Object3D(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
   for (const [type, list] of Object.entries(byType)) {
     const live = new THREE.InstancedMesh(NODE_GEO[type][0], VC_MAT, list.length), dep = new THREE.InstancedMesh(NODE_GEO[type][1], VC_MAT, list.length);
-    live.castShadow = dep.castShadow = true; live.receiveShadow = dep.receiveShadow = true;
+    live.castShadow = dep.castShadow = !NODE_TYPES[type].fish; live.receiveShadow = dep.receiveShadow = true;
     list.forEach((n, i) => {
       const s = type === 'tree' ? 0.9 + (n.r % 1) * 0.4 : 1;
-      dummy.position.set(n.x, H(n.x, n.z), n.z); dummy.rotation.set(0, n.r, 0); dummy.scale.setScalar(s); dummy.updateMatrix();
+      const fish = !!NODE_TYPES[type].fish;
+      dummy.position.set(n.x, fish ? -0.1 : H(n.x, n.z), n.z); dummy.rotation.set(0, n.r, 0); dummy.scale.setScalar(s); dummy.updateMatrix();
       live.setMatrixAt(i, dummy.matrix); dep.setMatrixAt(i, ZERO);
-      const isTree = type === 'tree' || type === 'oak';
-      colliders.push({ c: 1, x: n.x, z: n.z, r: isTree ? 0.55 : 0.95, node: n.id, ...(isTree ? { cam: 1.1, top: 5.5 } : {}) });
+      const isTree = type === 'tree' || type === 'oak' || type === 'ashtree';
+      if (!fish && !NODE_TYPES[type].trap) colliders.push({ c: 1, x: n.x, z: n.z, r: isTree ? 0.55 : 0.95, node: n.id, ...(isTree ? { cam: 1.1, top: 5.5 } : {}) });
       W.nodes.set(n.id, { ...n, def: NODE_TYPES[n.type], live, dep, idx: i, matrix: dummy.matrix.clone(), depleted: false, until: 0, obj: { position: dummy.position.clone(), rotation: { z: 0 } } });
     });
     live.computeBoundingSphere(); dep.computeBoundingSphere();
@@ -310,6 +347,6 @@ export function buildWorld(scene, { shadows = true } = {}) {
   const bl = makeLabel('The Hollow Barrow', '#ffcf7a', 1); bl.position.set(ex, ey + 6, ez); scene.add(bl);
   W.entrance = { x: ex, z: ez + 0.8, y: ey };
 
-  W.height = islandHeight;
+  W.height = islandHeight; W.H = H; W.mesh = mesh; W.M = M;
   return W;
 }

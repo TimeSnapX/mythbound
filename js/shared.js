@@ -1,3 +1,4 @@
+import { MAX_LEVEL, XP_AT_MAX, XP_DOUBLING } from './config.js';
 // Mythbound shared world data + simulation. Imported by BOTH the browser client and the Node server,
 // so it must stay dependency-free (no three.js, no DOM).
 export const PROTOCOL = 1;
@@ -9,6 +10,31 @@ export const DUNGEON_X = 2000;           // dungeon interior lives far east of t
 export const DUNGEON_START = { x: DUNGEON_X, z: 6 };
 export const BLOCK = 1.5;                // building grid cell size (cubes)
 export const MAX_STACK = 8;
+export const SAVE_VERSION = 2;
+// ---- v2: Emberfall Ridge (volcanic foothills east of the isle), Cinderdeep Mine interior ----
+export const RIDGE = { x: 232, z: -10, r: 88 };
+export const CAMP = { x: RIDGE.x - 50, z: -6, r: 12 };              // Ashfall Camp (safe zone, Hearthstone + merchant)
+export const VOLCANO = { x: RIDGE.x + 50, z: RIDGE.z - 6 };
+export const MINE_ENTRANCE = { x: RIDGE.x + 24, z: RIDGE.z - 6 };
+export const MINE_X = 3000;                 // Cinderdeep interior lives far east (x > 2600)
+export const MINE_START = { x: MINE_X, z: 6 };
+export const LAVA_POOLS = [{ x: RIDGE.x - 12, z: RIDGE.z - 32, r: 6 }, { x: RIDGE.x + 4, z: RIDGE.z + 24, r: 5 }, { x: RIDGE.x + 34, z: RIDGE.z + 34, r: 4.5 }];
+// Fade fog patches: hurt over time unless near a lit Hearthstone. `hearth` = the Hearthstone that clears it when lit.
+export const FADE_PATCHES = [
+  { id: 'f_ridge', x: RIDGE.x - 22, z: RIDGE.z + 30, r: 15, hearth: 'h_ridge' },
+  { id: 'f_ash', x: RIDGE.x + 14, z: RIDGE.z - 42, r: 11 },
+  { id: 'f_isle', x: -72, z: -50, r: 9 },
+];
+export const HEARTHSTONES = [
+  { id: 'h_camp', x: CAMP.x + 3, z: CAMP.z - 2, r: 11, lit: true },
+  { id: 'h_ridge', x: RIDGE.x - 22, z: RIDGE.z + 30, r: 13, lit: false, flag: 'q2_lit' },
+];
+export const FADE_ECHO = { x: RIDGE.x - 26, z: RIDGE.z + 35 };
+// bomb-able cracked walls in the overworld hiding treasure
+export const SECRETS = [
+  { id: 's_isle', x: 55, z: -46, ry: Math.PI * 0.75 },
+  { id: 's_ridge', x: RIDGE.x + 30, z: RIDGE.z + 16, ry: -Math.PI / 2 },
+];
 
 // ---------- deterministic helpers ----------
 export function mulberry32(a) {
@@ -46,7 +72,7 @@ function rawHeight(x, z) {
   return h;
 }
 const ENTRANCE_H = rawHeight(ENTRANCE.x, ENTRANCE.z);
-export function islandHeight(x, z) {
+function isleHeight(x, z) {
   let h = rawHeight(x, z);
   const dv = Math.hypot(x - VILLAGE.x, z - VILLAGE.z);
   if (dv < VILLAGE.r + 14) { const t = smooth(clamp((dv - VILLAGE.r + 2) / 16, 0, 1)); h = 4 + (h - 4) * t; }
@@ -54,96 +80,427 @@ export function islandHeight(x, z) {
   if (de < 14) { const t = smooth(clamp((de - 6) / 8, 0, 1)); h = ENTRANCE_H + (h - ENTRANCE_H) * t; }
   return h;
 }
+// Emberfall Ridge: ashy plateau with a volcano to the east, lava pools and basalt.
+function ridgeRaw(x, z) {
+  const d = Math.hypot(x - RIDGE.x, (z - RIDGE.z) * 1.15) / RIDGE.r;
+  let h = (1 - Math.pow(Math.min(d, 1.8), 2)) * 8 - 2;
+  h += (fbm(x * 0.035 - 40, z * 0.035 + 7) - 0.5) * 8 * Math.min(1, d * 1.6);
+  h += Math.exp(-(((x - VOLCANO.x) ** 2) + ((z - VOLCANO.z) ** 2)) / 520) * 30;   // the volcano
+  h -= Math.exp(-(((x - VOLCANO.x) ** 2) + ((z - VOLCANO.z) ** 2)) / 40) * 8;     // crater
+  if (d > 1.0) h = Math.min(h, -2 - (d - 1.0) * 25);
+  return h;
+}
+const MINE_EH = ridgeRaw(MINE_ENTRANCE.x - 3, MINE_ENTRANCE.z);
+function ridgeHeight(x, z) {
+  let h = ridgeRaw(x, z);
+  const dc = Math.hypot(x - CAMP.x, z - CAMP.z);
+  if (dc < CAMP.r + 12) { const t = smooth(clamp((dc - CAMP.r + 2) / 14, 0, 1)); h = 3 + (h - 3) * t; }
+  const dm = Math.hypot(x - MINE_ENTRANCE.x, z - MINE_ENTRANCE.z);
+  if (dm < 14) { const t = smooth(clamp((dm - 6) / 8, 0, 1)); h = MINE_EH + (h - MINE_EH) * t; }
+  for (const p of LAVA_POOLS) { const dp = Math.hypot(x - p.x, z - p.z); if (dp < p.r + 3) { const t = smooth(clamp((dp - p.r + 1) / 4, 0, 1)); h = Math.min(h, 0.2 + (h - 0.2) * t); } }
+  return h;
+}
+// terrain without the bridge deck (used for the terrain meshes)
+export function terrainHeight(x, z) {
+  const hi = x < 150 ? isleHeight(x, z) : -30;
+  if (x < 140) return hi;
+  return Math.max(hi, ridgeHeight(x, z));
+}
+// the Ember Bridge spans the strait between the isle's east shore and Ashfall Camp
+export const BRIDGE = (() => {
+  const z = -8; let x0 = 110, x1 = 200;
+  for (let x = 100; x < 150; x += 0.5) if (isleHeight(x, z) >= 1.6) x0 = x;
+  for (let x = 205; x > 140; x -= 0.5) if (ridgeHeight(x, z) >= 1.6) x1 = x;
+  return { x0: x0 - 1, x1: x1 + 1, z, hw: 1.9, h0: isleHeight(x0 - 1, z), h1: ridgeHeight(x1 + 1, z) };
+})();
+export function bridgeDeck(x, z) {
+  if (Math.abs(z - BRIDGE.z) > BRIDGE.hw || x < BRIDGE.x0 || x > BRIDGE.x1) return null;
+  const t = (x - BRIDGE.x0) / (BRIDGE.x1 - BRIDGE.x0);
+  return BRIDGE.h0 + (BRIDGE.h1 - BRIDGE.h0) * t + Math.sin(t * Math.PI) * 1.6;
+}
+export function islandHeight(x, z) {
+  const h = terrainHeight(x, z);
+  if (x > BRIDGE.x0 - 1 && x < BRIDGE.x1 + 1) { const d = bridgeDeck(x, z); if (d !== null && d > h) return d; }
+  return h;
+}
+export function lavaAt(x, z) {
+  for (const p of LAVA_POOLS) if (Math.hypot(x - p.x, z - p.z) < p.r - 0.5) return true;
+  return false;
+}
 export function zoneAt(x, z) {
   if (x > DUNGEON_X - 300) return 'dungeon';
   if (Math.hypot(x - VILLAGE.x, z - VILLAGE.z) < VILLAGE.r) return 'village';
+  if (x > 150) return Math.hypot(x - CAMP.x, z - CAMP.z) < CAMP.r ? 'camp' : 'ember';
   return 'wild';
+}
+export const isSafeZone = (z) => z === 'village' || z === 'camp';
+export const dungeonAt = (x) => (x > MINE_X - 400 ? 'mine' : 'barrow');
+export function inWorldBounds(x, z) {
+  if (zoneAt(x, z) === 'dungeon') return dungeonAt(x) === 'mine' ? Math.abs(x - MINE_X) < 60 && z > -170 && z < 40 : Math.abs(x - DUNGEON_X) < 60 && z > -140 && z < 40;
+  return Math.hypot(x, z) < 165 || Math.hypot(x - RIDGE.x, z - RIDGE.z) < 125 || bridgeDeck(x, z) !== null;
+}
+export function fadePatchAt(x, z, cleared) {
+  for (const f of FADE_PATCHES) if (!(cleared && cleared(f)) && Math.hypot(x - f.x, z - f.z) < f.r) return f;
+  return null;
 }
 
 // ---------- skills / items ----------
-export const SKILLS = ['combat', 'woodcutting', 'mining', 'smithing'];
-export const SKILL_NAMES = { combat: 'Combat', woodcutting: 'Woodcutting', mining: 'Mining', smithing: 'Smithing' };
-export function xpForLevel(L) { return L <= 1 ? 0 : Math.round(40 * (L - 1) ** 2 + 30 * (L - 1)); }
-export function levelForXp(xp) { let L = 1; while (L < 99 && xp >= xpForLevel(L + 1)) L++; return L; }
+export const SKILLS = ['combat', 'archery', 'magic', 'woodcutting', 'mining', 'fishing', 'hunting', 'smithing', 'cooking', 'crafting', 'fletching', 'runemaking'];
+export const SKILL_NAMES = { combat: 'Combat', archery: 'Archery', magic: 'Magic', woodcutting: 'Woodcutting', mining: 'Mining', fishing: 'Fishing', hunting: 'Hunting', smithing: 'Smithing', cooking: 'Cooking', crafting: 'Crafting', fletching: 'Fletching', runemaking: 'Runemaking' };
+export const SKILL_ICONS = { combat: '⚔', archery: '🏹', magic: '✨', woodcutting: '🪓', mining: '⛏', fishing: '🎣', hunting: '🪤', smithing: '🔨', cooking: '🍳', crafting: '🧵', fletching: '🪶', runemaking: '🔮' };
+export { MAX_LEVEL };
+const XP_DEN = 2 ** ((MAX_LEVEL - 1) / XP_DOUBLING) - 1;
+export function xpForLevel(L) { L = Math.max(1, Math.min(MAX_LEVEL, L)); return Math.round(XP_AT_MAX * (2 ** ((L - 1) / XP_DOUBLING) - 1) / XP_DEN); }
+export function levelForXp(xp) { let L = 1; while (L < MAX_LEVEL && xp >= xpForLevel(L + 1)) L++; return L; }
+// v1 curve, kept only for save migration
+export function v1LevelForXp(xp) { let L = 1; while (L < 99 && xp >= Math.round(40 * L ** 2 + 30 * L)) L++; return L; }
 
+// v: gold value (merchants buy at half). heal: half-hearts restored when eaten. gear: equipment item.
 export const ITEMS = {
-  log: { name: 'Logs', icon: '🪵' },
-  stone: { name: 'Stone', icon: '🪨' },
-  copper_ore: { name: 'Copper Ore', icon: '🟠' },
-  tin_ore: { name: 'Tin Ore', icon: '⚪' },
-  iron_ore: { name: 'Iron Ore', icon: '⚫' },
-  bronze_bar: { name: 'Bronze Bar', icon: '🟫' },
-  iron_bar: { name: 'Iron Bar', icon: '⬛' },
-  mythstone: { name: 'Mythstone Shard', icon: '💎' },
+  log: { name: 'Logs', icon: '🪵', v: 2 },
+  plank: { name: 'Planks', icon: '🟫', v: 4 },
+  stone: { name: 'Stone', icon: '🪨', v: 1 },
+  copper_ore: { name: 'Copper Ore', icon: '🟠', v: 4 },
+  tin_ore: { name: 'Tin Ore', icon: '⚪', v: 4 },
+  iron_ore: { name: 'Iron Ore', icon: '⚫', v: 8 },
+  coal: { name: 'Coal', icon: '◼️', v: 10 },
+  rune_essence: { name: 'Rune Essence', icon: '🔹', v: 3 },
+  bronze_bar: { name: 'Bronze Bar', icon: '🟧', v: 12 },
+  iron_bar: { name: 'Iron Bar', icon: '⬛', v: 20 },
+  steel_bar: { name: 'Steel Bar', icon: '⬜', v: 40 },
+  uncut_emerald: { name: 'Uncut Emerald', icon: '🟩', v: 60 },
+  uncut_diamond: { name: 'Uncut Diamond', icon: '🔳', v: 120 },
+  emerald: { name: 'Emerald', icon: '💚', v: 150 },
+  diamond: { name: 'Diamond', icon: '💠', v: 300 },
+  mythstone: { name: 'Mythstone Shard', icon: '💎', v: 0, quest: 1 },
+  cinder_shard: { name: 'Cinder Mythshard', icon: '🔥', v: 0, quest: 1 },
+  hook_cast: { name: 'Hook Cast (mould)', icon: '🪝', v: 0, quest: 1 },
+  raw_shrimp: { name: 'Raw Shrimp', icon: '🦐', v: 3 },
+  raw_trout: { name: 'Raw Trout', icon: '🐟', v: 6 },
+  raw_eel: { name: 'Raw Ember Eel', icon: '🐍', v: 12 },
+  raw_meat: { name: 'Raw Meat', icon: '🥩', v: 3 },
+  shrimp: { name: 'Cooked Shrimp', icon: '🍤', v: 6, heal: 2 },
+  trout: { name: 'Cooked Trout', icon: '🐠', v: 12, heal: 4 },
+  eel: { name: 'Smoked Ember Eel', icon: '🍢', v: 25, heal: 6 },
+  cooked_meat: { name: 'Cooked Meat', icon: '🍖', v: 8, heal: 3 },
+  burnt_food: { name: 'Burnt Food', icon: '🥓', v: 0 },
+  hide: { name: 'Hide', icon: '🟤', v: 5 },
+  leather: { name: 'Leather', icon: '🧶', v: 10 },
+  feather: { name: 'Feathers', icon: '🪶', v: 1 },
+  fire_shard: { name: 'Fire Shard', icon: '🔸', v: 15 },
+  beetle_plate: { name: 'Beetle Plate', icon: '🛡', v: 20 },
+  lantern_oil: { name: 'Lantern Oil', icon: '🏮', v: 10 },
+  bomb: { name: 'Blastcap Bomb', icon: '💣', v: 15 },
+  snare: { name: 'Snare', icon: '🪢', v: 6 },
+  box_trap: { name: 'Box Trap', icon: '🪤', v: 20 },
+  arrow_shaft: { name: 'Arrow Shafts', icon: '➖', v: 1 },
+  bronze_tips: { name: 'Bronze Arrowtips', icon: '🔺', v: 2 },
+  iron_tips: { name: 'Iron Arrowtips', icon: '🔻', v: 4 },
+  steel_tips: { name: 'Steel Arrowtips', icon: '🔷', v: 8 },
+  bronze_arrow: { name: 'Bronze Arrows', icon: '➶', v: 3, arrow: 0 },
+  iron_arrow: { name: 'Iron Arrows', icon: '➵', v: 6, arrow: 1 },
+  steel_arrow: { name: 'Steel Arrows', icon: '➳', v: 12, arrow: 2 },
+  air_rune: { name: 'Air Rune', icon: '🌀', v: 4, rune: 1 },
+  water_rune: { name: 'Water Rune', icon: '💧', v: 5, rune: 1 },
+  earth_rune: { name: 'Earth Rune', icon: '🟤', v: 5, rune: 1 },
+  fire_rune: { name: 'Fire Rune', icon: '🔥', v: 6, rune: 1 },
+  mind_rune: { name: 'Mind Rune', icon: '🧠', v: 10, rune: 1 },
+  fade_rune: { name: 'Fade Rune', icon: '🌫', v: 25, rune: 1 },
+  grapple_anchor: { name: 'Iron Grapple Anchor', icon: '⚓', v: 40 },
+  steel_anchor: { name: 'Steel Grapple Anchor', icon: '⚓', v: 80 },
 };
+// equipment. req = Combat (melee/armour) or Archery (bows) level needed to equip
+export const GEAR = {
+  wood_sword: { slot: 'weapon', name: 'Wooden Sword', atk: 1, sword: 'wood', icon: '🗡', v: 1, req: 1 },
+  bronze_sword: { slot: 'weapon', name: 'Bronze Sword', atk: 2, sword: 'bronze', icon: '🗡', v: 30, req: 1 },
+  iron_sword: { slot: 'weapon', name: 'Iron Sword', atk: 3, sword: 'iron', icon: '🗡', v: 60, req: 8 },
+  steel_sword: { slot: 'weapon', name: 'Steel Sword', atk: 4, sword: 'steel', icon: '⚔', v: 120, req: 18 },
+  emerald_sword: { slot: 'weapon', name: 'Emerald Blade', atk: 5, sword: 'emerald', icon: '⚔', v: 400, req: 40, ench: 'emerald' },
+  diamond_sword: { slot: 'weapon', name: 'Diamond Blade', atk: 6, sword: 'diamond', icon: '⚔', v: 800, req: 50, ench: 'diamond' },
+  driftwood_shield: { slot: 'shield', name: 'Driftwood Shield', def: 0, color: 0x7a5a3a, icon: '🛡', v: 1, req: 1 },
+  bronze_shield: { slot: 'shield', name: 'Bronze Shield', def: 1, color: 0xd08a3c, icon: '🛡', v: 30, req: 1 },
+  iron_shield: { slot: 'shield', name: 'Iron Shield', def: 2, color: 0xa0a4ac, icon: '🛡', v: 50, req: 8 },
+  steel_shield: { slot: 'shield', name: 'Steel Shield', def: 3, color: 0xd8dde6, icon: '🛡', v: 110, req: 18 },
+  leather_cap: { slot: 'head', name: 'Leather Cap', def: 1, color: 0x8a5a30, icon: '🧢', v: 15, req: 1 },
+  leather_body: { slot: 'body', name: 'Leather Body', def: 2, color: 0x8a5a30, icon: '🦺', v: 35, req: 1 },
+  leather_chaps: { slot: 'legs', name: 'Leather Chaps', def: 1, color: 0x7a4a28, icon: '👖', v: 25, req: 1 },
+  bronze_helm: { slot: 'head', name: 'Bronze Helm', def: 1, color: 0xd08a3c, icon: '⛑', v: 20, req: 1 },
+  bronze_body: { slot: 'body', name: 'Bronze Platebody', def: 3, color: 0xd08a3c, icon: '🥋', v: 50, req: 1 },
+  bronze_legs: { slot: 'legs', name: 'Bronze Platelegs', def: 2, color: 0xc07a30, icon: '👖', v: 35, req: 1 },
+  iron_helm: { slot: 'head', name: 'Iron Helm', def: 2, color: 0xa0a4ac, icon: '⛑', v: 40, req: 8 },
+  iron_body: { slot: 'body', name: 'Iron Platebody', def: 4, color: 0xa0a4ac, icon: '🥋', v: 90, req: 8 },
+  iron_legs: { slot: 'legs', name: 'Iron Platelegs', def: 3, color: 0x90949c, icon: '👖', v: 60, req: 8 },
+  steel_helm: { slot: 'head', name: 'Steel Helm', def: 3, color: 0xd8dde6, icon: '⛑', v: 80, req: 18 },
+  steel_body: { slot: 'body', name: 'Steel Platebody', def: 6, color: 0xd8dde6, icon: '🥋', v: 180, req: 18 },
+  steel_legs: { slot: 'legs', name: 'Steel Platelegs', def: 4, color: 0xc8cdd6, icon: '👖', v: 120, req: 18 },
+  shortbow: { slot: 'ranged', name: 'Shortbow', rng: 2, color: 0x9a6a3a, icon: '🏹', v: 20, req: 1, skill: 'archery' },
+  longbow: { slot: 'ranged', name: 'Longbow', rng: 3, color: 0x7a4a24, icon: '🏹', v: 60, req: 10, skill: 'archery' },
+  ember_bow: { slot: 'ranged', name: 'Emberwood Bow', rng: 4, color: 0xc04a1a, icon: '🏹', v: 160, req: 25, skill: 'archery' },
+};
+for (const [k, g] of Object.entries(GEAR)) ITEMS[k] = { name: g.name, icon: g.icon, v: g.v, gear: 1 };
+export const SLOTS = ['weapon', 'shield', 'ranged', 'head', 'body', 'legs'];
+export const SLOT_NAMES = { weapon: 'Weapon', shield: 'Shield', ranged: 'Bow', head: 'Head', body: 'Body', legs: 'Legs' };
+export const ENCHANTS = { emerald: { name: 'Lifesteal', desc: '25% chance to heal ½ heart on hit' }, diamond: { name: 'Crit', desc: '20% chance to deal double damage, ignores armour' } };
 export const SWORDS = {
   wood: { name: 'Wooden Sword', dmg: 1, color: 0x9b6b3a },
   bronze: { name: 'Bronze Sword', dmg: 2, color: 0xd08a3c },
   iron: { name: 'Iron Sword', dmg: 3, color: 0xd0d4dc },
+  steel: { name: 'Steel Sword', dmg: 4, color: 0xeef3ff },
+  emerald: { name: 'Emerald Blade', dmg: 5, color: 0x30d070 },
+  diamond: { name: 'Diamond Blade', dmg: 6, color: 0xc8f4ff },
 };
+export const STATION_SKILL = { furnace: 'smithing', anvil: 'smithing', range: 'cooking', workbench: 'crafting', fletch: 'fletching' };
+export const STATION_NAMES = { furnace: 'Furnace — Smelting', anvil: 'Anvil — Forging', range: 'Cooking Fire', workbench: 'Workbench — Crafting & Fletching' };
+const R = (id, station, name, input, out, level, xp, extra = {}) => ({ id, station, name, input, out, level, xp, skill: extra.skill || STATION_SKILL[station], ...extra });
 export const RECIPES = [
-  { id: 'bronze_bar', station: 'furnace', name: 'Smelt Bronze Bar', input: { copper_ore: 1, tin_ore: 1 }, out: { bronze_bar: 1 }, level: 1, xp: 15 },
-  { id: 'iron_bar', station: 'furnace', name: 'Smelt Iron Bar', input: { iron_ore: 1 }, out: { iron_bar: 1 }, level: 3, xp: 30 },
-  { id: 'bronze_sword', station: 'anvil', name: 'Forge Bronze Sword', input: { bronze_bar: 2 }, sword: 'bronze', level: 1, xp: 40 },
-  { id: 'iron_sword', station: 'anvil', name: 'Forge Iron Sword', input: { iron_bar: 2 }, sword: 'iron', level: 3, xp: 80 },
+  R('bronze_bar', 'furnace', 'Smelt Bronze Bar', { copper_ore: 1, tin_ore: 1 }, { bronze_bar: 1 }, 1, 120),
+  R('iron_bar', 'furnace', 'Smelt Iron Bar', { iron_ore: 1 }, { iron_bar: 1 }, 8, 260),
+  R('steel_bar', 'furnace', 'Smelt Steel Bar', { iron_ore: 1, coal: 2 }, { steel_bar: 1 }, 18, 520),
+  R('bronze_sword', 'anvil', 'Forge Bronze Sword', { bronze_bar: 2 }, { bronze_sword: 1 }, 1, 300, { sword: 'bronze' }),
+  R('bronze_helm', 'anvil', 'Forge Bronze Helm', { bronze_bar: 1 }, { bronze_helm: 1 }, 2, 160),
+  R('bronze_tips', 'anvil', 'Forge Bronze Arrowtips ×10', { bronze_bar: 1 }, { bronze_tips: 10 }, 2, 140),
+  R('bronze_shield', 'anvil', 'Forge Bronze Shield', { bronze_bar: 2 }, { bronze_shield: 1 }, 3, 300),
+  R('bronze_legs', 'anvil', 'Forge Bronze Platelegs', { bronze_bar: 2 }, { bronze_legs: 1 }, 4, 320),
+  R('bronze_body', 'anvil', 'Forge Bronze Platebody', { bronze_bar: 3 }, { bronze_body: 1 }, 5, 480),
+  R('iron_sword', 'anvil', 'Forge Iron Sword', { iron_bar: 2 }, { iron_sword: 1 }, 9, 600, { sword: 'iron' }),
+  R('iron_tips', 'anvil', 'Forge Iron Arrowtips ×10', { iron_bar: 1 }, { iron_tips: 10 }, 9, 300),
+  R('iron_helm', 'anvil', 'Forge Iron Helm', { iron_bar: 1 }, { iron_helm: 1 }, 10, 320),
+  R('grapple_anchor', 'anvil', 'Forge Iron Grapple Anchor', { iron_bar: 2 }, { grapple_anchor: 1 }, 10, 600, { needs: 'hook_cast' }),
+  R('iron_shield', 'anvil', 'Forge Iron Shield', { iron_bar: 2 }, { iron_shield: 1 }, 11, 620),
+  R('iron_legs', 'anvil', 'Forge Iron Platelegs', { iron_bar: 2 }, { iron_legs: 1 }, 12, 650),
+  R('iron_body', 'anvil', 'Forge Iron Platebody', { iron_bar: 3 }, { iron_body: 1 }, 14, 980),
+  R('steel_sword', 'anvil', 'Forge Steel Sword', { steel_bar: 2, fire_shard: 1 }, { steel_sword: 1 }, 19, 1200, { sword: 'steel' }),
+  R('steel_tips', 'anvil', 'Forge Steel Arrowtips ×10', { steel_bar: 1 }, { steel_tips: 10 }, 19, 600),
+  R('steel_helm', 'anvil', 'Forge Steel Helm', { steel_bar: 1 }, { steel_helm: 1 }, 20, 640),
+  R('steel_anchor', 'anvil', 'Forge Steel Grapple Anchor', { steel_bar: 2 }, { steel_anchor: 1 }, 20, 1200, { needs: 'hook_cast' }),
+  R('steel_shield', 'anvil', 'Forge Steel Shield', { steel_bar: 2, beetle_plate: 1 }, { steel_shield: 1 }, 21, 1250),
+  R('steel_legs', 'anvil', 'Forge Steel Platelegs', { steel_bar: 2 }, { steel_legs: 1 }, 23, 1300),
+  R('steel_body', 'anvil', 'Forge Steel Platebody', { steel_bar: 3 }, { steel_body: 1 }, 25, 1950),
+  R('emerald_sword', 'anvil', 'Forge Emerald Blade', { steel_bar: 2, emerald: 1 }, { emerald_sword: 1 }, 40, 6000, { sword: 'emerald' }),
+  R('diamond_sword', 'anvil', 'Forge Diamond Blade', { steel_bar: 3, diamond: 1 }, { diamond_sword: 1 }, 50, 12000, { sword: 'diamond' }),
+  R('cook_shrimp', 'range', 'Cook Shrimp', { raw_shrimp: 1 }, { shrimp: 1 }, 1, 120, { burn: 0.35 }),
+  R('cook_meat', 'range', 'Cook Meat', { raw_meat: 1 }, { cooked_meat: 1 }, 1, 160, { burn: 0.35 }),
+  R('cook_trout', 'range', 'Cook Trout', { raw_trout: 1 }, { trout: 1 }, 8, 300, { burn: 0.4 }),
+  R('cook_eel', 'range', 'Smoke Ember Eel', { raw_eel: 1 }, { eel: 1 }, 15, 520, { burn: 0.45 }),
+  R('plank', 'workbench', 'Saw Planks ×2', { log: 1 }, { plank: 2 }, 1, 60),
+  R('leather', 'workbench', 'Tan Leather', { hide: 1 }, { leather: 1 }, 1, 100),
+  R('snare', 'workbench', 'Twist a Snare', { log: 1 }, { snare: 1 }, 1, 60),
+  R('leather_cap', 'workbench', 'Stitch Leather Cap', { leather: 1 }, { leather_cap: 1 }, 3, 160),
+  R('leather_chaps', 'workbench', 'Stitch Leather Chaps', { leather: 2 }, { leather_chaps: 1 }, 6, 320),
+  R('box_trap', 'workbench', 'Build a Box Trap', { plank: 2, iron_bar: 1 }, { box_trap: 1 }, 8, 300),
+  R('leather_body', 'workbench', 'Stitch Leather Body', { leather: 3 }, { leather_body: 1 }, 9, 520),
+  R('cut_emerald', 'workbench', 'Cut Emerald', { uncut_emerald: 1 }, { emerald: 1 }, 30, 3000),
+  R('cut_diamond', 'workbench', 'Cut Diamond', { uncut_diamond: 1 }, { diamond: 1 }, 35, 4500),
+  R('arrow_shaft', 'workbench', 'Fletch Arrow Shafts ×10', { log: 1 }, { arrow_shaft: 10 }, 1, 50, { skill: 'fletching' }),
+  R('shortbow', 'workbench', 'Fletch Shortbow', { log: 2 }, { shortbow: 1 }, 1, 160, { skill: 'fletching' }),
+  R('bronze_arrow', 'workbench', 'Fletch Bronze Arrows ×5', { arrow_shaft: 5, feather: 5, bronze_tips: 5 }, { bronze_arrow: 5 }, 1, 120, { skill: 'fletching' }),
+  R('iron_arrow', 'workbench', 'Fletch Iron Arrows ×5', { arrow_shaft: 5, feather: 5, iron_tips: 5 }, { iron_arrow: 5 }, 9, 260, { skill: 'fletching' }),
+  R('longbow', 'workbench', 'Fletch Longbow', { log: 4, leather: 1 }, { longbow: 1 }, 10, 640, { skill: 'fletching' }),
+  R('steel_arrow', 'workbench', 'Fletch Steel Arrows ×5', { arrow_shaft: 5, feather: 5, steel_tips: 5 }, { steel_arrow: 5 }, 19, 520, { skill: 'fletching' }),
+  R('ember_bow', 'workbench', 'Fletch Emberwood Bow', { log: 3, fire_shard: 2 }, { ember_bow: 1 }, 25, 1600, { skill: 'fletching' }),
 ];
+// burn chance falls 4% per level above the recipe level
+export const burnChance = (r, lvl) => (r.burn ? Math.max(0, r.burn - (lvl - r.level) * 0.04) : 0);
+// rune altars: bind rune essence into runes. Extra rune per essence every 11 levels above the requirement.
+export const ALTARS = [
+  { id: 'air', rune: 'air_rune', name: 'Air Altar', level: 1, xp: 50, x: -30.8, z: 67, color: 0xdfefff },
+  { id: 'water', rune: 'water_rune', name: 'Water Altar', level: 5, xp: 70, x: -96, z: -6, color: 0x4aa0ff },
+  { id: 'earth', rune: 'earth_rune', name: 'Earth Altar', level: 9, xp: 90, x: 92, z: 28, color: 0x8a6a3a },
+  { id: 'fire', rune: 'fire_rune', name: 'Fire Altar', level: 14, xp: 120, x: RIDGE.x - 2, z: RIDGE.z - 36, color: 0xff5a20 },
+  { id: 'mind', rune: 'mind_rune', name: 'Mind Altar', level: 25, xp: 200, x: RIDGE.x - 30, z: RIDGE.z - 18, color: 0xd080ff },
+  { id: 'fade', rune: 'fade_rune', name: 'Fade Altar', level: 40, xp: 400, x: RIDGE.x + 14, z: RIDGE.z - 42, color: 0xc8ccd2 },
+];
+// spells: cost in runes. kind: bolt (projectile), heal, teleport, enchant
+export const SPELLS = [
+  { id: 'wind_bolt', name: 'Wind Bolt', level: 1, cost: { air_rune: 2 }, kind: 'bolt', dmg: 2, xp: 90, color: 0xdfefff, icon: '🌀' },
+  { id: 'water_bolt', name: 'Water Bolt', level: 5, cost: { air_rune: 2, water_rune: 1 }, kind: 'bolt', dmg: 3, xp: 140, color: 0x4aa0ff, icon: '💧' },
+  { id: 'heal', name: 'Heal', level: 8, cost: { water_rune: 2, earth_rune: 1 }, kind: 'heal', heal: 4, xp: 160, color: 0x8cff9a, icon: '💚' },
+  { id: 'earth_bolt', name: 'Earth Bolt', level: 10, cost: { air_rune: 2, earth_rune: 2 }, kind: 'bolt', dmg: 4, xp: 200, color: 0x9a7a4a, icon: '🪨' },
+  { id: 'fire_bolt', name: 'Fire Bolt', level: 15, cost: { air_rune: 3, fire_rune: 2 }, kind: 'bolt', dmg: 5, xp: 280, color: 0xff6a20, icon: '🔥' },
+  { id: 'teleport', name: 'Teleport to Hearthstone', level: 20, cost: { air_rune: 3, earth_rune: 1, mind_rune: 1 }, kind: 'teleport', xp: 400, color: 0xffd27a, icon: '🏠' },
+  { id: 'mind_blast', name: 'Mind Blast', level: 30, cost: { mind_rune: 2, fire_rune: 2 }, kind: 'bolt', dmg: 7, xp: 600, color: 0xd080ff, icon: '🧠' },
+  { id: 'ench_emerald', name: 'Enchant Emerald (Lifesteal)', level: 40, cost: { emerald: 1, earth_rune: 5, water_rune: 5 }, kind: 'enchant', ench: 'emerald', xp: 3000, color: 0x30d070, icon: '💚' },
+  { id: 'ench_diamond', name: 'Enchant Diamond (Crit)', level: 45, cost: { diamond: 1, fire_rune: 5, mind_rune: 5 }, kind: 'enchant', ench: 'diamond', xp: 5000, color: 0xc8f4ff, icon: '💠' },
+  { id: 'fade_ward', name: 'Fade Ward', level: 42, cost: { fade_rune: 1, air_rune: 3 }, kind: 'ward', xp: 800, color: 0xc8ccd2, icon: '🌫' },
+];
+// unlock tables (shown as tooltips in the Skills panel). Generic perks every few levels make gathering faster.
+export const UNLOCKS = {
+  combat: [[1, 'Bronze gear'], [4, '+1 heart'], [8, 'Iron gear'], [12, 'Spin attack costs less stamina'], [18, 'Steel gear'], [25, '+1 heart'], [30, 'Faster combo'], [40, 'Emerald Blade'], [50, 'Diamond Blade']],
+  archery: [[1, 'Shortbow, bronze arrows'], [5, 'Longer range'], [9, 'Iron arrows'], [10, 'Longbow'], [15, 'Faster draw'], [19, 'Steel arrows'], [25, 'Emberwood Bow'], [35, 'Double-shot chance'], [50, 'Master archer']],
+  magic: SPELLS.map((s) => [s.level, s.name]),
+  woodcutting: [[1, 'Trees'], [4, 'Chop 5% faster'], [8, 'Oak trees'], [12, 'Chop 10% faster'], [15, 'Ashwood (Emberfall)'], [20, 'Chop 15% faster'], [30, 'Double log chance'], [40, 'Chop 25% faster'], [50, 'Woodsman']],
+  mining: [[1, 'Copper, tin, stone'], [5, 'Rune essence'], [8, 'Iron'], [12, 'Mine 10% faster'], [15, 'Coal'], [20, 'Better gem odds'], [30, 'Gem odds ×2'], [40, 'Mine 25% faster'], [50, 'Prospector']],
+  fishing: [[1, 'Shrimp'], [4, 'Fish 5% faster'], [8, 'Trout'], [12, 'Fish 10% faster'], [15, 'Ember Eel (Emberfall)'], [25, 'Double catch chance'], [40, 'Fish 25% faster'], [50, 'Angler']],
+  hunting: [[1, 'Rabbit burrows (snare)'], [5, 'Traps catch faster'], [8, 'Ash fowl nests (feathers)'], [12, 'Extra hide chance'], [15, 'Boar trails (box trap)'], [25, 'Traps catch twice as fast'], [50, 'Master tracker']],
+  smithing: RECIPES.filter((r) => r.skill === 'smithing').map((r) => [r.level, r.name]),
+  cooking: RECIPES.filter((r) => r.skill === 'cooking').map((r) => [r.level, r.name]).concat([[20, 'Rarely burn shrimp/meat'], [30, 'Never burn trout']]),
+  crafting: RECIPES.filter((r) => r.skill === 'crafting').map((r) => [r.level, r.name]),
+  fletching: RECIPES.filter((r) => r.skill === 'fletching').map((r) => [r.level, r.name]),
+  runemaking: ALTARS.map((a) => [a.level, a.name]).concat([[12, '2 air runes per essence'], [16, '2 water runes per essence']]),
+};
+for (const k in UNLOCKS) UNLOCKS[k].sort((a, b) => a[0] - b[0]);
+// generic gathering speed perk: up to 30% faster at level 50
+export const gatherSpeed = (lvl) => 1 - Math.min(0.3, (lvl - 1) * 0.006);
+
+// building pieces. h = height in the stack; solid=false => no collision; top=false => nothing can sit on it; plot => home plot only
 export const PIECES = {
-  wood: { name: 'Wood Block', cost: { log: 1 }, h: BLOCK, color: 0x9a6a3c },
-  stone: { name: 'Stone Block', cost: { stone: 1 }, h: BLOCK, color: 0x8d8f94 },
-  floor: { name: 'Plank Floor', cost: { log: 1 }, h: 0.3, color: 0xc49a62 },
+  wood: { name: 'Wood Block', icon: '🟫', cost: { log: 1 }, h: BLOCK, color: 0x9a6a3c },
+  stone: { name: 'Stone Block', icon: '⬜', cost: { stone: 1 }, h: BLOCK, color: 0x8d8f94 },
+  floor: { name: 'Plank Floor', icon: '▭', cost: { log: 1 }, h: 0.3, color: 0xc49a62 },
+  wall: { name: 'Wall', icon: '▮', cost: { plank: 2 }, h: 3, color: 0xd8c7a0 },
+  door: { name: 'Door', icon: '🚪', cost: { plank: 3 }, h: 3, color: 0x7a4e2a, top: false },
+  window: { name: 'Window Wall', icon: '🪟', cost: { plank: 2 }, h: 3, color: 0xd8c7a0 },
+  roof: { name: 'Roof Slope', icon: '◢', cost: { plank: 2 }, h: 0.75, color: 0xa8452e },
+  stairs: { name: 'Stairs', icon: '⊿', cost: { plank: 2 }, h: BLOCK, color: 0xb08050 },
+  fence: { name: 'Fence', icon: '⧧', cost: { plank: 1 }, h: 1.0, color: 0x8a6442, top: false },
+  torch: { name: 'Torch', icon: '🔥', cost: { log: 1 }, h: 1.4, color: 0x5a3a20, solid: false, top: false },
+  chest: { name: 'Storage Chest', icon: '📦', cost: { plank: 4 }, h: 0.9, color: 0x8a5a2a, top: false },
+  bench: { name: 'Workbench', icon: '🪚', cost: { plank: 3, stone: 2 }, h: 1.0, color: 0xa07040, top: false },
+  campfire: { name: 'Campfire', icon: '🍳', cost: { log: 2, stone: 1 }, h: 0.5, color: 0x6a6a6a, top: false, solid: false },
+  anchor: { name: 'Grapple Anchor', icon: '⚓', cost: { grapple_anchor: 1 }, alt: { steel_anchor: 1 }, h: 3.2, color: 0x6b4a2e, top: false },
+  hearth: { name: 'Hearthstone', icon: '💠', cost: { stone: 5, lantern_oil: 1 }, h: 1.6, color: 0x7a8aa0, top: false, plot: 1 },
+  bankchest: { name: 'Bank Chest', icon: '🏦', cost: { plank: 6, iron_bar: 2 }, h: 1.0, color: 0x5a4a8a, top: false, plot: 1 },
+};
+export const PIECE_ORDER = Object.keys(PIECES);
+export const pieceType = (entry) => String(entry).split('@')[0];
+export const pieceRot = (entry) => +(String(entry).split('@')[1] || 0) & 3;
+export const PLOT_CELLS = 8;               // home plot = 8x8 cells (12 m)
+export const PLOT_COST = 100;              // gold coins
+
+// enemy loot: coins [min,max] plus independent item rolls [item, chance, qty]
+export const LOOT = {
+  mossling: { gold: [1, 3], items: [['log', 0.2, 1]] },
+  grubkin: { gold: [2, 5], items: [['copper_ore', 0.25, 1], ['tin_ore', 0.25, 1]] },
+  boar: { gold: [3, 6], items: [['hide', 0.8, 1], ['raw_meat', 0.8, 1]] },
+  hound: { gold: [3, 7], items: [['hide', 0.6, 1], ['raw_meat', 0.6, 1]] },
+  imp: { gold: [4, 9], items: [['fire_shard', 0.5, 1], ['fire_rune', 0.3, 3]] },
+  hollowed: { gold: [5, 10], items: [['coal', 0.5, 1], ['iron_ore', 0.3, 1], ['uncut_emerald', 0.03, 1]] },
+  shellback: { gold: [6, 12], items: [['beetle_plate', 0.9, 1]] },
+  warden: { gold: [30, 30], items: [] },
+  magmaw: { gold: [150, 150], items: [['fire_shard', 1, 3], ['uncut_diamond', 1, 1]] },
+};
+// merchants: what they sell and for how much; they buy anything with value at half price
+export const SHOPS = {
+  bram: { name: "Bram's Forge & Goods", sells: { plank: 6, lantern_oil: 12, copper_ore: 8, tin_ore: 8, bronze_bar: 20, raw_shrimp: 5, feather: 2, snare: 10, rune_essence: 6 } },
+  tamsin: { name: 'Ashfall Supplies', sells: { cooked_meat: 12, trout: 20, coal: 18, lantern_oil: 12, leather: 18, bomb: 15, bronze_arrow: 5, air_rune: 8 } },
+};
+export const sellPrice = (item) => Math.floor((ITEMS[item]?.v || 0) / 2);
+// gems: rare mining drops (better odds in Emberfall + Cinderdeep)
+export function gemChance(x, mineLvl) { const base = x > 150 ? 1 / 25 : 1 / 70; return base * (mineLvl >= 30 ? 2 : mineLvl >= 20 ? 1.4 : 1); }
+// pets
+export const PETS = {
+  dog: { name: 'Dog', icon: '🐕', perk: 'Sniffs out loot (+25% coins, bigger pickup range) and tracks game (traps catch 2× faster).' },
+  cat: { name: 'Cat', icon: '🐈', perk: 'Lucky: ×1.5 odds on rare gems and loot drops.' },
+  bird: { name: 'Bird', icon: '🐦', perk: 'Scouts ahead: marks nearby enemies and resources.' },
 };
 
 // ---------- resource nodes ----------
 export const NODE_TYPES = {
-  tree: { skill: 'woodcutting', level: 1, xp: 25, item: 'log', qty: 1, respawn: 20, time: 1.5, label: 'Chop Tree' },
-  oak: { skill: 'woodcutting', level: 3, xp: 45, item: 'log', qty: 2, respawn: 30, time: 2.0, label: 'Chop Oak' },
-  rock: { skill: 'mining', level: 1, xp: 15, item: 'stone', qty: 1, respawn: 15, time: 1.4, label: 'Mine Rock' },
-  copper: { skill: 'mining', level: 1, xp: 20, item: 'copper_ore', qty: 1, respawn: 20, time: 1.6, label: 'Mine Copper' },
-  tin: { skill: 'mining', level: 1, xp: 20, item: 'tin_ore', qty: 1, respawn: 20, time: 1.6, label: 'Mine Tin' },
-  iron: { skill: 'mining', level: 3, xp: 40, item: 'iron_ore', qty: 1, respawn: 35, time: 2.0, label: 'Mine Iron' },
+  tree: { skill: 'woodcutting', level: 1, xp: 200, item: 'log', qty: 1, respawn: 20, time: 1.5, label: 'Chop Tree' },
+  oak: { skill: 'woodcutting', level: 8, xp: 400, item: 'log', qty: 2, respawn: 30, time: 2.0, label: 'Chop Oak' },
+  rock: { skill: 'mining', level: 1, xp: 120, item: 'stone', qty: 1, respawn: 15, time: 1.4, label: 'Mine Rock', gems: 1 },
+  copper: { skill: 'mining', level: 1, xp: 160, item: 'copper_ore', qty: 1, respawn: 20, time: 1.6, label: 'Mine Copper', gems: 1 },
+  tin: { skill: 'mining', level: 1, xp: 160, item: 'tin_ore', qty: 1, respawn: 20, time: 1.6, label: 'Mine Tin', gems: 1 },
+  iron: { skill: 'mining', level: 8, xp: 350, item: 'iron_ore', qty: 1, respawn: 35, time: 2.0, label: 'Mine Iron', gems: 1 },
+  ashtree: { skill: 'woodcutting', level: 15, xp: 600, item: 'log', qty: 2, respawn: 25, time: 1.8, label: 'Chop Ashwood' },
+  coal: { skill: 'mining', level: 15, xp: 550, item: 'coal', qty: 1, respawn: 30, time: 1.8, label: 'Mine Coal', gems: 1 },
+  essence: { skill: 'mining', level: 5, xp: 100, item: 'rune_essence', qty: 2, respawn: 12, time: 1.4, label: 'Mine Rune Essence' },
+  shrimp: { skill: 'fishing', level: 1, xp: 160, item: 'raw_shrimp', qty: 1, respawn: 18, time: 2.2, label: 'Net Shrimp', fish: 1 },
+  trout: { skill: 'fishing', level: 8, xp: 380, item: 'raw_trout', qty: 1, respawn: 25, time: 2.6, label: 'Fish Trout', fish: 1 },
+  eel: { skill: 'fishing', level: 15, xp: 650, item: 'raw_eel', qty: 1, respawn: 30, time: 3.0, label: 'Fish Ember Eel', fish: 1 },
+  // hunting: set a trap, wait for the catch, then check it
+  burrow: { skill: 'hunting', level: 1, xp: 180, trap: 'snare', catch: 6, loot: [['hide', 1, 1], ['raw_meat', 1, 1]], respawn: 20, time: 1.0, label: 'Set Snare (rabbit burrow)' },
+  nest: { skill: 'hunting', level: 8, xp: 360, trap: 'snare', catch: 7, loot: [['feather', 1, 6], ['raw_meat', 0.6, 1]], respawn: 25, time: 1.0, label: 'Set Snare (ash fowl nest)' },
+  trail: { skill: 'hunting', level: 15, xp: 700, trap: 'box_trap', catch: 9, loot: [['hide', 1, 2], ['raw_meat', 1, 2], ['feather', 0.5, 3]], respawn: 30, time: 1.4, label: 'Set Box Trap (boar trail)' },
 };
 function validWild(x, z, minH = 1.2) {
   if (islandHeight(x, z) < minH) return false;
+  if (_v2 && (SECRETS.some((s) => Math.hypot(x - s.x, z - s.z) < 7) || ALTARS.some((a) => Math.hypot(x - a.x, z - a.z) < 5) || Math.abs(z - BRIDGE.z) < 4 && x > 90)) return false;
   if (Math.hypot(x - VILLAGE.x, z - VILLAGE.z) < VILLAGE.r + 4) return false;
   if (Math.hypot(x - ENTRANCE.x, z - ENTRANCE.z) < 13) return false;
   return true;
 }
-let _nodes = null;
+function validRidge(x, z, minH = 1.5) {
+  if (zoneAt(x, z) !== 'ember' || terrainHeight(x, z) < minH || terrainHeight(x, z) > 14) return false;
+  if (Math.hypot(x - CAMP.x, z - CAMP.z) < CAMP.r + 6) return false;
+  if (Math.hypot(x - MINE_ENTRANCE.x, z - MINE_ENTRANCE.z) < 12) return false;
+  if (Math.abs(z - BRIDGE.z) < 5 && x < CAMP.x) return false;
+  for (const p of LAVA_POOLS) if (Math.hypot(x - p.x, z - p.z) < p.r + 2.5) return false;
+  for (const s of SECRETS) if (Math.hypot(x - s.x, z - s.z) < 7) return false;
+  for (const a of ALTARS) if (Math.hypot(x - a.x, z - a.z) < 5) return false;
+  if (Math.hypot(x - FADE_ECHO.x, z - FADE_ECHO.z) < 5) return false;
+  return true;
+}
+// shoreline fishing spots: walk outward along rays until the water is wading-deep
+function shoreSpots(cx, cz, angles, hfn, r0, r1) {
+  const out = [];
+  for (const a of angles) {
+    for (let r = r0; r < r1; r += 0.5) {
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      if (hfn(x, z) < -0.7) { out.push({ x: +x.toFixed(2), z: +z.toFixed(2) }); break; }
+    }
+  }
+  return out;
+}
+let _nodes = null, _v2 = false;
 export function generateNodes() {
   if (_nodes) return _nodes;
   const rnd = mulberry32(1337), nodes = [];
   const far = (x, z, m) => nodes.every((o) => Math.hypot(o.x - x, o.z - z) > m);
-  const place = (type, count, gen, spacing = 3.5) => {
+  const place = (type, count, gen, spacing = 3.5, prefix = type, valid = validWild) => {
     let n = 0, tries = 0;
     while (n < count && tries++ < 30000) {
       const p = gen();
-      if (!validWild(p.x, p.z) || !far(p.x, p.z, spacing)) continue;
-      nodes.push({ id: `${type}_${n}`, type, x: +p.x.toFixed(2), z: +p.z.toFixed(2), r: rnd() * 6.28 });
+      if (!valid(p.x, p.z) || !far(p.x, p.z, spacing)) continue;
+      nodes.push({ id: `${prefix}_${n}`, type, x: +p.x.toFixed(2), z: +p.z.toFixed(2), r: rnd() * 6.28 });
       n++;
     }
   };
   const disc = (cx, cz, R) => () => { const a = rnd() * Math.PI * 2, r = Math.sqrt(rnd()) * R; return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r }; };
-  // a few starter trees/rocks just outside the village gate
+  // (v1 order + seeds kept so node ids/positions are unchanged for old saves and the server)
   place('tree', 6, disc(-8, 48, 9));
   place('rock', 3, disc(14, 44, 6));
-  // forest (west + north), denser where noise is high
   const forest = () => { for (;;) { const p = disc(-30, -20, 85)(); if (fbm(p.x * 0.04, p.z * 0.04) > 0.47 || rnd() < 0.15) return p; } };
   place('tree', 70, forest);
   place('oak', 14, disc(-55, -35, 35), 5);
-  // eastern mining hills
   place('rock', 10, disc(70, -8, 30));
   place('copper', 8, disc(62, -2, 24));
   place('tin', 8, disc(78, -14, 24));
   place('iron', 6, disc(80, -30, 18));
+  // ---- v2 additions (appended, separate generator) ----
+  _v2 = true;
+  const rnd2 = mulberry32(2026);
+  const disc2 = (cx, cz, R) => () => { const a = rnd2() * Math.PI * 2, r = Math.sqrt(rnd2()) * R; return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r }; };
+  place('ashtree', 22, disc2(RIDGE.x - 10, RIDGE.z, 70), 4, 'ash', validRidge);
+  place('coal', 8, disc2(RIDGE.x + 12, RIDGE.z + 4, 30), 4, 'coal', validRidge);
+  place('iron', 5, disc2(RIDGE.x + 10, RIDGE.z - 20, 26), 4, 'riron', validRidge);
+  place('rock', 5, disc2(RIDGE.x - 20, RIDGE.z - 10, 30), 4, 'rrock', validRidge);
+  const isleFish = shoreSpots(0, 0, [0.6, 1.1, 1.75, 2.3, 2.75, 3.3, 3.9, 4.4, 5.3, 5.8], (x, z) => isleHeight(x, z), 90, 150)
+    .filter((p) => Math.abs(p.z - BRIDGE.z) > 12 || p.x < 60);
+  isleFish.forEach((p, i) => nodes.push({ id: `${i % 2 ? 'trout' : 'shrimp'}_${i >> 1}`, type: i % 2 ? 'trout' : 'shrimp', x: p.x, z: p.z, r: 0 }));
+  shoreSpots(RIDGE.x, RIDGE.z, [0.9, 1.6, 2.4, 4.0, 4.8, 5.5], (x, z) => ridgeRaw(x, z), 50, 120)
+    .forEach((p, i) => nodes.push({ id: `eel_${i}`, type: 'eel', x: p.x, z: p.z, r: 0 }));
+  // rune essence by the altars, hunting grounds
+  place('essence', 4, disc2(-24, 60, 8), 3.5, 'ess', validWild);
+  place('essence', 4, disc2(RIDGE.x - 6, RIDGE.z - 30, 10), 3.5, 'ress', validRidge);
+  place('burrow', 6, disc2(-20, 70, 30), 6, 'burrow', validWild);
+  place('trail', 4, disc2(60, 30, 28), 7, 'trail', validWild);
+  place('nest', 5, disc2(RIDGE.x - 20, RIDGE.z + 10, 40), 7, 'nest', validRidge);
   return (_nodes = nodes);
 }
 
 // ---------- enemies ----------
 export const ENEMY_TYPES = {
-  mossling: { name: 'Mossling', hp: 3, speed: 2.4, aggro: 9, range: 2.4, tell: 0.75, dmg: 1, cool: 1.6, xp: 10, radius: 0.7, respawn: 25, leash: 22 },
-  grubkin: { name: 'Grubkin', hp: 6, speed: 3.0, aggro: 12, range: 2.3, tell: 0.85, dmg: 1, cool: 1.8, xp: 20, radius: 0.8, respawn: 30, leash: 28 },
-  boar: { name: 'Bristleboar', hp: 8, speed: 2.2, aggro: 14, range: 9, tell: 1.0, dmg: 2, cool: 2.6, xp: 30, radius: 1.0, respawn: 35, leash: 34 },
-  warden: { name: 'Barrow Warden', hp: 20, speed: 2.3, aggro: 30, range: 3.6, tell: 1.1, dmg: 2, cool: 1.4, xp: 200, radius: 1.6, respawn: 0, leash: 60, boss: true },
+  mossling: { name: 'Mossling', hp: 3, speed: 2.4, aggro: 9, range: 2.4, tell: 0.75, dmg: 1, cool: 1.6, xp: 80, radius: 0.7, respawn: 25, leash: 22 },
+  grubkin: { name: 'Grubkin', hp: 6, speed: 3.0, aggro: 12, range: 2.3, tell: 0.85, dmg: 1, cool: 1.8, xp: 160, radius: 0.8, respawn: 30, leash: 28 },
+  boar: { name: 'Bristleboar', hp: 8, speed: 2.2, aggro: 14, range: 9, tell: 1.0, dmg: 2, cool: 2.6, xp: 240, radius: 1.0, respawn: 35, leash: 34 },
+  warden: { name: 'Barrow Warden', hp: 20, speed: 2.3, aggro: 30, range: 3.6, tell: 1.1, dmg: 2, cool: 1.4, xp: 1600, radius: 1.6, respawn: 0, leash: 60, boss: true },
+  // v2 — Emberfall Ridge + Cinderdeep Mine
+  hound: { name: 'Ash Hound', hp: 5, speed: 4.2, aggro: 13, range: 3.0, tell: 0.6, dmg: 2, cool: 1.5, xp: 300, radius: 0.8, respawn: 30, leash: 30 },
+  imp: { name: 'Cinder Imp', hp: 4, speed: 2.8, aggro: 15, range: 10, tell: 0.75, dmg: 2, cool: 2.2, xp: 340, radius: 0.6, respawn: 30, leash: 26, ranged: 1 },
+  hollowed: { name: 'Hollowed Miner', hp: 7, speed: 1.8, aggro: 10, range: 2.7, tell: 1.0, dmg: 2, cool: 1.9, xp: 380, radius: 0.8, respawn: 40, leash: 24 },
+  shellback: { name: 'Shellback Beetle', hp: 8, speed: 2.0, aggro: 12, range: 8, tell: 1.0, dmg: 2, cool: 2.8, xp: 600, radius: 1.1, respawn: 0, leash: 30, armoured: 1 },
+  magmaw: { name: 'Magmaw, the Furnace Worm', hp: 24, speed: 0, aggro: 18, range: 12, tell: 0.9, dmg: 2, cool: 1, xp: 4000, radius: 2.0, respawn: 0, leash: 99, boss: true },
 };
 let _spawns = null;
 export function generateEnemySpawns() {
@@ -162,10 +519,26 @@ export function generateEnemySpawns() {
   ring('mossling', 6, 36, 55);
   ring('grubkin', 5, 55, 90, Math.PI * 0.6, Math.PI * 1.6);
   ring('boar', 3, 50, 85, -Math.PI * 0.4, Math.PI * 0.4);
+  // v2: Emberfall Ridge
+  const rnd2 = mulberry32(777);
+  const ridge = (type, count, cx, cz, R) => {
+    let n = 0, tries = 0;
+    while (n < count && tries++ < 5000) {
+      const a = rnd2() * Math.PI * 2, r = Math.sqrt(rnd2()) * R, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      if (!validRidge(x, z, 1.8) || lavaAt(x, z)) continue;
+      if (Math.hypot(x - CAMP.x, z - CAMP.z) < CAMP.r + 16) continue;
+      if (out.some((o) => Math.hypot(o.x - x, o.z - z) < 8)) continue;
+      out.push({ id: `${type}_${n}`, type, x: +x.toFixed(2), z: +z.toFixed(2) }); n++;
+    }
+  };
+  _v2 = true;
+  ridge('hound', 5, RIDGE.x, RIDGE.z, 55);
+  ridge('imp', 4, RIDGE.x + 10, RIDGE.z, 40);
+  ridge('hollowed', 4, FADE_PATCHES[0].x + 4, FADE_PATCHES[0].z - 4, 20);
   return (_spawns = out);
 }
 
-// Generic enemy AI. Runs on the server (overworld, authoritative) or in the browser (solo mode + instanced dungeon).
+// Generic enemy AI. Runs on the server (overworld, authoritative) or in the browser (solo mode + instanced dungeons).
 // heightFn(x,z) -> ground height; blockedFn(x,z) -> true if an obstacle; players: [{id,x,z,dead}]
 export class EnemySim {
   constructor(spawns, opts = {}) {
@@ -174,17 +547,19 @@ export class EnemySim {
     this.respawn = opts.respawn !== false;
     this.rand = opts.rand || Math.random;
     this.enemies = new Map();
+    this.proj = []; this.projN = 0;
     for (const s of spawns) this.enemies.set(s.id, this.make(s));
   }
   make(s) {
     const T = ENEMY_TYPES[s.type];
-    return { id: s.id, type: s.type, sx: s.x, sz: s.z, x: s.x, z: s.z, ry: 0, hp: T.hp, max: T.hp, state: 'idle', st: 0,
-      alive: true, atk: 0, kind: 'a', wx: s.x, wz: s.z, cd: 0, dx: 0, dz: 1, kx: 0, kz: 0, n: 0 };
+    return { id: s.id, type: s.type, sx: s.x, sz: s.z, x: s.x, z: s.z, ry: s.ry || 0, hp: T.hp, max: T.hp, state: 'idle', st: 0,
+      alive: true, atk: 0, kind: 'a', wx: s.x, wz: s.z, cd: 0, dx: 0, dz: 1, kx: 0, kz: 0, n: 0, spots: s.spots || null, spot: 0, phase: 1, cx: s.cx, cz: s.cz };
   }
   set(e, s) { e.state = s; e.st = 0; }
   canStand(x, z) {
-    if (zoneAt(x, z) === 'village') return false;
+    if (isSafeZone(zoneAt(x, z))) return false;
     if (this.height(x, z) < -1) return false;
+    if (x > 150 && x < 1700 && lavaAt(x, z)) return false;
     if (this.blocked && this.blocked(x, z)) return false;
     return true;
   }
@@ -204,6 +579,12 @@ export class EnemySim {
   }
   update(dt, players) {
     const ev = [];
+    // fireballs (Cinder Imps)
+    for (let i = this.proj.length - 1; i >= 0; i--) {
+      const p = this.proj[i]; p.t += dt; p.x += p.dx * 9 * dt; p.z += p.dz * 9 * dt;
+      ev.push({ t: 'hit', id: p.id, atk: p.n, x: +p.x.toFixed(2), z: +p.z.toFixed(2), r: 0.7, dmg: p.dmg, sx: +(p.x - p.dx * 2).toFixed(2), sz: +(p.z - p.dz * 2).toFixed(2), fire: 1 });
+      if (p.t > 1.6 || (this.blocked && this.blocked(p.x, p.z))) this.proj.splice(i, 1);
+    }
     for (const e of this.enemies.values()) {
       const T = ENEMY_TYPES[e.type];
       e.st += dt; e.cd -= dt;
@@ -216,10 +597,11 @@ export class EnemySim {
       }
       let tgt = null, td = 1e9;
       for (const p of players) {
-        if (p.dead || zoneAt(p.x, p.z) === 'village') continue;
+        if (p.dead || isSafeZone(zoneAt(p.x, p.z))) continue;
         const d = Math.hypot(p.x - e.x, p.z - e.z);
         if (d < td) { td = d; tgt = p; }
       }
+      if (e.type === 'magmaw') { this.updateMagmaw(e, T, dt, tgt, td, ev); continue; }
       const leash = Math.hypot(e.x - e.sx, e.z - e.sz);
       const fwd = () => { e.dx = Math.sin(e.ry); e.dz = Math.cos(e.ry); };
       switch (e.state) {
@@ -240,9 +622,15 @@ export class EnemySim {
             e.kind = e.type === 'warden' ? (td < 2.6 && this.rand() < 0.45 ? 'sweep' : 'slam') : 'a';
             this.set(e, 'tell'); break;
           }
-          const want = e.type === 'boar' ? 5 : T.range * 0.7;
+          if (e.type === 'imp') { // keep a safe distance, sidestep
+            if (td < 5) this.move(e, -Math.sin(e.ry), -Math.cos(e.ry), T.speed * dt);
+            else if (td > 8) this.moveToward(e, tgt.x, tgt.z, T.speed, dt);
+            else { const s = Math.sin(e.atk * 2.1 + e.st) > 0 ? 1 : -1; this.move(e, Math.cos(e.ry) * s, -Math.sin(e.ry) * s, T.speed * 0.5 * dt); }
+            break;
+          }
+          const want = e.type === 'boar' || e.type === 'shellback' ? 5 : T.range * 0.7;
           if (td > want) this.moveToward(e, tgt.x, tgt.z, T.speed, dt);
-          else if (e.type !== 'boar') { // circle-strafe a little while waiting
+          else if (e.type !== 'boar' && e.type !== 'shellback') { // circle-strafe a little while waiting
             const s = Math.sin(e.atk * 1.7) > 0 ? 1 : -1; this.move(e, Math.cos(e.ry) * s, -Math.sin(e.ry) * s, T.speed * 0.4 * dt);
           }
           break;
@@ -253,16 +641,30 @@ export class EnemySim {
           break;
         case 'attack': {
           const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
-          if (e.type === 'mossling') {
-            if (e.st < 0.35) this.move(e, e.dx, e.dz, 7 * dt);
+          if (e.type === 'mossling' || e.type === 'hound') {
+            const lunge = e.type === 'hound' ? 10 : 7;
+            if (e.st < 0.35) this.move(e, e.dx, e.dz, lunge * dt);
             if (e.st >= 0.12 && e.n !== e.atk) { e.n = e.atk; hit(e.x + e.dx * 0.6, e.z + e.dz * 0.6, 1.3); }
             if (e.st > 0.5) { e.cd = T.cool; this.set(e, 'recover'); }
-          } else if (e.type === 'grubkin') {
+          } else if (e.type === 'grubkin' || e.type === 'hollowed') {
             if (e.st < 0.15) this.move(e, e.dx, e.dz, 4 * dt);
             if (e.st >= 0.15 && e.n !== e.atk) { e.n = e.atk; hit(e.x + e.dx * 1.5, e.z + e.dz * 1.5, 1.5); }
             if (e.st > 0.55) { e.cd = T.cool; this.set(e, 'recover'); }
-          } else if (e.type === 'boar') {
-            const moved = this.move(e, e.dx, e.dz, 12 * dt);
+          } else if (e.type === 'imp') {
+            if (e.n !== e.atk) {
+              e.n = e.atk;
+              this.proj.push({ id: e.id + ':fb', n: ++this.projN, x: e.x + e.dx * 0.8, z: e.z + e.dz * 0.8, dx: e.dx, dz: e.dz, t: 0, dmg: T.dmg });
+              ev.push({ t: 'fire', id: e.id });
+            }
+            if (e.st > 0.4) {
+              e.cd = T.cool;
+              if (this.rand() < 0.4) { // blink away
+                for (let i = 0; i < 6; i++) { const a = this.rand() * 6.28, nx = e.sx + Math.cos(a) * 5, nz = e.sz + Math.sin(a) * 5; if (this.canStand(nx, nz)) { e.x = nx; e.z = nz; ev.push({ t: 'blink', id: e.id }); break; } }
+              }
+              this.set(e, 'recover');
+            }
+          } else if (e.type === 'boar' || e.type === 'shellback') {
+            const moved = this.move(e, e.dx, e.dz, (e.type === 'shellback' ? 10 : 12) * dt);
             hit(e.x + e.dx * 0.8, e.z + e.dz * 0.8, 1.4);
             if (e.st > 0.9 || !moved) { e.cd = T.cool; this.set(e, moved ? 'recover' : 'stuck'); }
           } else if (e.type === 'warden') {
@@ -279,6 +681,9 @@ export class EnemySim {
         case 'stuck': // vulnerable window (warden after slam, boar after hitting a wall)
           if (e.st > (e.type === 'warden' ? 1.9 : 1.2)) this.set(e, 'recover');
           break;
+        case 'flipped': // shellback knocked onto its back by a bomb
+          if (e.st > 5) this.set(e, 'recover');
+          break;
         case 'recover':
           if (e.st > 0.5) this.set(e, 'chase');
           break;
@@ -290,20 +695,67 @@ export class EnemySim {
     }
     return ev;
   }
-  // returns {ok, blocked, killed, hp, xp}
-  damage(id, dmg, fromX, fromZ) {
+  // Magmaw: surfaces at a lava spot, inhales (bomb its mouth!), breathes fire, sinks. Stunned = molten heart exposed.
+  updateMagmaw(e, T, dt, tgt, td, ev) {
+    const ph = e.hp <= 8 ? 3 : e.hp <= 16 ? 2 : 1;
+    if (ph !== e.phase) { e.phase = ph; ev.push({ t: 'phase', id: e.id, phase: ph }); }
+    const face = () => { if (tgt) e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z); e.dx = Math.sin(e.ry); e.dz = Math.cos(e.ry); };
+    const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
+    switch (e.state) {
+      case 'idle': if (tgt && td < T.aggro) { this.set(e, 'submerged'); ev.push({ t: 'roar', id: e.id }); } break;
+      case 'submerged':
+        if (ph === 3 && tgt && !e.erupt && e.st > 0.3) { e.erupt = { x: tgt.x, z: tgt.z, t: 0 }; e.atk++; }
+        if (e.erupt) { e.erupt.t += dt; if (e.erupt.t > 1.1 && !e.erupt.done) { e.erupt.done = true; ev.push({ t: 'hit', id: e.id + ':er', atk: e.atk, x: e.erupt.x, z: e.erupt.z, r: 2.0, dmg: T.dmg, sx: e.erupt.x, sz: e.erupt.z + 0.01, erupt: 1 }); } }
+        if (e.st > (ph === 1 ? 1.8 : ph === 2 ? 1.4 : 1.6)) {
+          e.erupt = null;
+          if (e.spots && e.spots.length) { let i = Math.floor(this.rand() * e.spots.length); if (i === e.spot) i = (i + 1) % e.spots.length; e.spot = i; e.x = e.spots[i].x; e.z = e.spots[i].z; }
+          face(); this.set(e, 'rise');
+        }
+        break;
+      case 'rise': face(); if (e.st > 0.7) this.set(e, 'inhale'); break;
+      case 'inhale': face(); if (e.st > (ph === 1 ? 3.6 : ph === 2 ? 3.0 : 2.4)) { e.atk++; e.kind = 'breath'; this.set(e, 'tell'); } break;
+      case 'tell': if (e.st < 0.5) face(); if (e.st > T.tell) this.set(e, 'attack'); break;
+      case 'attack':
+        if (e.n !== e.atk && e.st > 0.1) { e.n = e.atk; for (let d = 2.5; d <= 11; d += 2.1) hit(e.x + e.dx * d, e.z + e.dz * d, 1.4 + d * 0.06, { fire: 1, unblockable: 1 }); }
+        if (e.st > 0.9) this.set(e, 'submerging');
+        break;
+      case 'stunned': if (e.st > 5) this.set(e, 'submerging'); break;
+      case 'submerging': if (e.st > 0.6) { if (e.cx !== undefined && e.spots) { e.x = e.spots[e.spot].x; e.z = e.spots[e.spot].z; } this.set(e, 'submerged'); } break;
+    }
+  }
+  // returns {ok, blocked, killed, hp, xp, flipped, stunned}. opts.bomb = blast damage, opts.mouth = bomb went down Magmaw's throat
+  damage(id, dmg, fromX, fromZ, opts = {}) {
     const e = this.enemies.get(id);
     if (!e || !e.alive) return { ok: false };
     const T = ENEMY_TYPES[e.type];
     let dx = e.x - fromX, dz = e.z - fromZ; const d = Math.hypot(dx, dz) || 1; dx /= d; dz /= d;
-    if (e.type === 'warden' && e.state !== 'stuck') {
+    if (e.type === 'warden' && e.state !== 'stuck' && !opts.bomb) {
       // frontal armour: only hits from behind land unless he is stuck after a slam
       const fx = Math.sin(e.ry), fz = Math.cos(e.ry);
       if (-(dx * fx + dz * fz) > -0.2) return { ok: true, blocked: true, hp: e.hp };
     }
+    if (e.type === 'shellback') {
+      if (opts.bomb && e.state !== 'flipped') { this.set(e, 'flipped'); return { ok: true, flipped: true, hp: e.hp }; }
+      if (e.state !== 'flipped') return { ok: true, blocked: true, hp: e.hp };
+      dmg *= 2;
+    }
+    if (e.type === 'magmaw') {
+      if (opts.mouth && (e.state === 'inhale' || e.state === 'rise')) {
+        this.set(e, 'stunned');
+        if (e.cx !== undefined) { const vx = e.cx - e.x, vz = e.cz - e.z, l = Math.hypot(vx, vz) || 1; e.x += vx / l * 3.2; e.z += vz / l * 3.2; e.ry = Math.atan2(vx, vz); }
+        e.hp = Math.max(1, e.hp - 2);
+        return { ok: true, stunned: true, hp: e.hp };
+      }
+      if (e.state !== 'stunned') return { ok: true, blocked: true, hp: e.hp };
+      const before = e.phase, after = e.hp - dmg <= 8 ? 3 : e.hp - dmg <= 16 ? 2 : 1;
+      e.hp = Math.max(0, e.hp - dmg);
+      if (e.hp <= 0) { e.alive = false; this.set(e, 'dead'); return { ok: true, killed: true, hp: 0, xp: T.xp }; }
+      if (after !== before) this.set(e, 'submerging'); // phase change: it dives early
+      return { ok: true, hp: e.hp };
+    }
     e.hp = Math.max(0, e.hp - dmg);
     if (e.hp <= 0) { e.alive = false; this.set(e, 'dead'); return { ok: true, killed: true, hp: 0, xp: T.xp }; }
-    if (!T.boss && e.state !== 'attack') { e.kx = dx; e.kz = dz; this.set(e, 'stagger'); }
+    if (!T.boss && e.state !== 'attack' && e.state !== 'flipped') { e.kx = dx; e.kz = dz; this.set(e, 'stagger'); }
     return { ok: true, hp: e.hp };
   }
   snapshot() {
@@ -326,13 +778,25 @@ export function buildRefusal(gx, gz, stackLen) {
   const [cx, cz] = cellCenter(gx, gz);
   const zone = zoneAt(cx, cz);
   if (zone === 'village') return 'You cannot build inside the village — it is protected.';
+  if (zone === 'camp') return 'Ashfall Camp is protected — build out on the Ridge.';
   if (zone === 'dungeon') return 'The barrow resists your building.';
   if (Math.hypot(cx - VILLAGE.x, cz - VILLAGE.z) < VILLAGE.r + 1.5) return 'Too close to the village wall.';
   if (Math.hypot(cx - ENTRANCE.x, cz - ENTRANCE.z) < 7) return 'Too close to the barrow entrance.';
+  if (Math.hypot(cx - MINE_ENTRANCE.x, cz - MINE_ENTRANCE.z) < 8) return 'Too close to the mine entrance.';
+  if (bridgeDeck(cx, cz) !== null || (Math.abs(cz - BRIDGE.z) < BRIDGE.hw + 1.5 && cx > BRIDGE.x0 - 2 && cx < BRIDGE.x1 + 2)) return 'Keep the bridge clear.';
+  if (cx > 150 && lavaAt(cx, cz)) return 'Not in the lava!';
   if (cellBase(gx, gz) < -0.5) return 'You cannot build in deep water.';
   if (stackLen >= MAX_STACK) return 'That stack is as high as it goes.';
   return null;
 }
 
 // teleport destinations the server accepts without speed checks
-export const TELEPORTS = [SPAWN, DUNGEON_START, { x: ENTRANCE.x, z: ENTRANCE.z + 5 }, { x: DUNGEON_X, z: -39 }];
+export const TELEPORTS = [SPAWN, DUNGEON_START, { x: ENTRANCE.x, z: ENTRANCE.z + 5 }, { x: DUNGEON_X, z: -39 }, MINE_START, { x: MINE_ENTRANCE.x - 5, z: MINE_ENTRANCE.z }];
+
+// skill capes (level 50): cape colour + emblem colour per skill
+export const SKILL_COLORS = {
+  combat: [0xb02a2a, 0xffd040], archery: [0x2f8f3a, 0xe8f0c0], magic: [0x5a2a9a, 0x80e0ff], woodcutting: [0x5a7a2a, 0xc8a060],
+  mining: [0x4a5058, 0xd0d8e0], fishing: [0x2a5fb0, 0xa0e0ff], hunting: [0x6a4a2a, 0xe0c090], smithing: [0x5a5a60, 0xff8a20],
+  cooking: [0xffffff, 0xb02a2a], crafting: [0x8a5a9a, 0xffe060], fletching: [0x2a7a6a, 0xffffff], runemaking: [0xd08a1c, 0x3a3f48],
+};
+export const TOTAL_MILESTONE = 50;

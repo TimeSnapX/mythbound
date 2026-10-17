@@ -6,7 +6,7 @@
  *   intercepted or cached. Game saves live in localStorage, not here. WebSockets are never touched.
  * Bump VERSION to drop old caches.
  */
-const VERSION = "v1";
+const VERSION = "v2.0.0";
 const CACHE = `mythbound-${VERSION}`;
 const SCOPE = new URL(self.registration.scope);
 const PRECACHE = [
@@ -14,6 +14,7 @@ const PRECACHE = [
   "vendor/three.module.min.js",
   "js/main.js", "js/config.js", "js/game.js", "js/shared.js", "js/avatar.js", "js/world.js", "js/dungeon.js",
   "js/enemies.js", "js/building.js", "js/input.js", "js/net.js", "js/ui.js",
+  "js/ridge.js", "js/mine.js", "js/audio.js", "js/pets.js", "js/rpg.js", "js/story.js", "js/systems.js", "assets/logo.webp",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png", "icons/apple-touch-icon.png"
 ];
 const NEVER = ["sw.js"];

@@ -11,7 +11,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="description" content="Low-poly fantasy adventure: lock-on sword combat, skills, building and a dungeon. Single player.">
+<meta name="description" content="Low-poly fantasy action-RPG: lock-on sword combat, 12 skills, building, pets, two dungeons. Single player.">
 <script>
 // Register the service worker early (http/https only; skipped for file://).
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
@@ -26,17 +26,19 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
 <div id="lb-top" class="lb"></div><div id="lb-bot" class="lb"></div>
 
 <div id="hud" class="hidden">
-  <div id="topleft"><div id="hearts"></div><div id="stamina"><div id="stamina-fill"></div></div></div>
+  <div id="topleft"><div id="hearts"></div><div id="stamina"><div id="stamina-fill"></div></div>
+    <div id="fademeter" class="hidden"><span>🌫 Fade</span><div><i id="fade-fill"></i></div></div>
+    <div id="mebar"><span id="me-name"></span><span id="totalbadge" title="Total level">⭐ 0</span><span id="gold" title="Gold coins">🪙 0</span><span id="quickslot" title="Quick-slot (Z)"></span><span id="bombcount" class="hidden" title="Bombs (R)">💣 0</span></div></div>
   <div id="quest"><div class="qt">📜 The Hollow Barrow</div><div id="quest-text"></div><div id="quest-dir"></div></div>
   <div id="badges"><span id="zone-badge"></span><span id="net-badge"></span></div>
-  <div id="topbtns"><button id="btn-skills" title="Skills (C)">📊</button><button id="btn-bag" title="Bag (I)">🎒</button><button id="btn-help" title="Help (H)">?</button></div>
+  <div id="topbtns"><button id="btn-skills" title="Skills (C)">📊</button><button id="btn-bag" title="Inventory (I)">🎒</button><button id="btn-journal" title="Journal (L)">📜</button><button id="btn-spells" title="Spellbook (K)">✨</button><button id="btn-settings" title="Settings (O)">⚙</button><button id="btn-help" title="Help (H)">?</button></div>
   <div id="prompt" class="hidden"></div>
   <div id="toasts"></div>
   <div id="banner"></div>
   <div id="chat"><div id="chat-log"></div><input id="chat-input" maxlength="200" placeholder="Enter to chat" autocomplete="off"></div>
   <div id="buildbar" class="hidden"></div>
   <div id="panel" class="hidden"></div>
-  <div id="dialog" class="hidden"><div id="dialog-name"></div><div id="dialog-text"></div><div id="dialog-next">▶</div></div>
+  <div id="dialog" class="hidden"><div id="dialog-name"></div><div id="dialog-text"></div><div id="dialog-choices" class="hidden"></div><div id="dialog-next">▶</div></div>
   <div id="touch" class="hidden">
     <div id="joy"><div id="joy-knob"></div></div>
     <div id="tbtns">
@@ -46,20 +48,25 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
       <button data-act="lock" id="t-lock">🎯</button>
       <button data-act="interact" id="t-use">✋</button>
       <button data-act="grapple" id="t-grapple" class="hidden">🪝</button>
+      <button data-act="bomb" id="t-bomb" class="hidden">💣</button>
+      <button data-act="bow" id="t-bow" class="hidden">🏹</button>
+      <button data-act="spell" id="t-spell" class="hidden">✨</button>
+      <button data-act="quick" id="t-quick">🍖</button>
     </div>
     <div id="tbtns2">
-      <button data-act="build" id="t-build">🧱</button>
+      <button data-act="build" id="t-build">🧱</button><button data-act="bag" id="t-bag">🎒</button><button data-act="journal" id="t-journal">📜</button>
       <button data-act="chat" id="t-chat">💬</button>
     </div>
     <div id="tbuild" class="hidden">
-      <button data-act="place">＋</button><button data-act="remove">－</button><button data-act="cycle">⟳</button>
+      <button data-act="place">＋</button><button data-act="remove">－</button><button data-act="cycle">⟳</button><button data-act="rotate">↻</button><button data-act="claim">🏠</button>
     </div>
   </div>
 </div>
 
 <div id="create" class="hidden">
   <div class="cc-panel">
-    <h1>Mythbound</h1>
+    <!-- Title logo: swap the file at assets/logo.webp (regenerate with mythbound-v2-tests/make-logo.py) -->
+    <h1 class="logo-h"><img id="cc-logo" src="assets/logo.webp" alt="Mythbound" width="768" height="432"></h1>
     <p class="tag">Forge your legend.</p>
     <div id="cc-continue" class="hidden"><button id="cc-cont-btn" class="primary"></button><button id="cc-new-btn" class="link">Create a new character</button></div>
     <div id="cc-form">

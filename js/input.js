@@ -2,7 +2,8 @@
 const KEYMAP = {
   KeyJ: 'attack', Tab: 'lock', KeyQ: 'shield', Space: 'roll', KeyE: 'interact', KeyG: 'grapple', KeyB: 'build',
   ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyC: 'skills', KeyI: 'bag', KeyH: 'help', Enter: 'chat', Escape: 'escape',
-  Digit1: 'piece1', Digit2: 'piece2', Digit3: 'piece3', KeyX: 'remove', KeyF: 'place',
+  Digit1: 'piece1', Digit2: 'piece2', Digit3: 'piece3', Digit4: 'piece4', Digit5: 'piece5', Digit6: 'piece6', Digit7: 'piece7', Digit8: 'piece8', Digit9: 'piece9', Digit0: 'piece10',
+  KeyX: 'remove', KeyF: 'place', KeyR: 'bomb', KeyV: 'bow', KeyT: 'spell', KeyZ: 'quick', KeyL: 'journal', KeyK: 'spellbook', KeyO: 'settings', KeyP: 'claim',
 };
 export class Input {
   constructor(canvas) {

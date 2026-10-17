@@ -12,3 +12,32 @@ Static site, no build step. three.js r170 is vendored in `vendor/` (MIT, see `ve
 Installable as an app (manifest + network-first service worker scoped to `/mythbound/`).
 
 Run locally: `python3 -m http.server 8090` in this folder, then open http://localhost:8090/.
+
+## v2.0.0 — changelog
+- **Save migration**: v1 saves (`mythbound_save_v1`) are migrated automatically into `mythbound_save_v2`. Inventory, flags, builds, hearts and position are kept. Each skill keeps its v1 level (capped at 50) and is re-based onto the new curve. The v1 sword becomes the equipped weapon. The v1 key is left in place as a backup. The service worker cache is now `v2.0.0`.
+- **XP curve**: max level 50, `xpForLevel(L) = round(1e6·(2^((L-1)/7) − 1)/127)`.
+- **Skills (12)**: Combat, Archery, Magic, Woodcutting, Mining, Fishing, Hunting, Smithing, Cooking, Crafting, Fletching, Runemaking.
+  - A total-level ⭐ badge sits on the HUD and name tag, with a milestone toast every 50 levels.
+  - Level 50 unlocks that skill's cape, chosen with a cape selector.
+- **New zones**:
+  - Emberfall Ridge, with the Fade fog, a Fade meter, and Hearthstone safe circles.
+  - The Ashfall merchant camp (Corin, and Tamsin's shop).
+  - Cinderdeep Mine: minecart and switch puzzle, cracked walls, a lava bridge, and the Magmaw boss (weak point and phases).
+- **Quests**:
+  - Q2 The Fading Ridge and Q3 Cinderdeep, plus the pet quest with Wren (choose a dog, cat or bird, then name it).
+  - Quest journal (L), world quest markers, and the Vael vision.
+- **Economy**:
+  - Gold coins and shops for buying and selling.
+  - Inventory is capped at 30 slots; stacks share one slot and a toast warns when it is full.
+  - A bank (200 slots) at the Banker booth, plus a buildable bank chest.
+  - Coal and steel smithing, gems with enchanting, bombs, a bow, arrows, and rune spells.
+- **Building v2**:
+  - Aim where you look, with a ghost preview and R to rotate.
+  - New pieces: doors that save their open state, stairs, roof, and grapple anchor posts for the Hook Cast.
+  - Home plot (P, 100 coins) with a Hearthstone respawn point.
+- **Presentation**:
+  - WebAudio sound effects and per-zone music, with volume settings.
+  - NPC idle, talk and wave animations.
+  - A settings menu (O) and phone landscape controls for bomb, bow, spell, quick item, bag and journal.
+- **Debug** (`?debug=1`): `MB.debug.teleport/give/gold/setLevel/maxSkill/maxAll/flag/tod/pet/heal/god`.
+- **Logo**: `assets/logo.webp`. Regenerate it with `python3 make-logo.py <src.jpg>` in mythbound-v2-tests.
