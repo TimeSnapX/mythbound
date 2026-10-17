@@ -170,3 +170,11 @@ body.bigbtn #touch button { transform: scale(1.18); }
   #panel { max-height: 92vh; padding: 10px 14px; } .invgrid { grid-template-columns: repeat(6, 42px); } .cell { width: 42px; height: 42px; font-size: 19px; }
   .bagwrap { grid-template-columns: auto 1fr; gap: 10px; } #mebar { font-size: 11px; }
 }
+
+/* Install app (PWA) */
+#cc-install { display: block; width: 100%; margin-top: 10px; padding: 10px; border-radius: 8px; border: 2px solid #8a6a3a; background: #1f2a1c; color: #ffcf7a; font: inherit; font-weight: bold; cursor: pointer; }
+#cc-install.ready { background: linear-gradient(#2f6a4a, #1d4430); color: #fff; border-color: #6fd6a8; }
+#btn-install.ready { border-color: #6fd6a8; }
+#install-hint { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 1000; pointer-events: auto;
+  display: flex; align-items: center; gap: 10px; max-width: 92vw; padding: 10px 12px 10px 14px; border-radius: 10px; border: 2px solid #8a6a3a; background: rgba(20,16,10,.95); color: #fff; font-size: 15px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+#install-hint .ih-close { flex: none; width: 30px; height: 30px; border-radius: 6px; border: 1px solid #8a6a3a; background: #3a2e1c; color: #fff; cursor: pointer; }

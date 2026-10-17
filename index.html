@@ -15,9 +15,10 @@
 <script>
 // Register the service worker early (http/https only; skipped for file://).
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function () {});
+  navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function (e) { console.warn('SW registration failed', e); });
 }
 </script>
+<script src="js/install.js"></script>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
 </head>
@@ -31,7 +32,7 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
     <div id="mebar"><span id="me-name"></span><span id="totalbadge" title="Total level">⭐ 0</span><span id="gold" title="Gold coins">🪙 0</span><span id="quickslot" title="Quick-slot (Z)"></span><span id="bombcount" class="hidden" title="Bombs (R)">💣 0</span></div></div>
   <div id="quest"><div class="qt">📜 The Hollow Barrow</div><div id="quest-text"></div><div id="quest-dir"></div></div>
   <div id="badges"><span id="zone-badge"></span><span id="net-badge"></span></div>
-  <div id="topbtns"><button id="btn-skills" title="Skills (C)">📊</button><button id="btn-bag" title="Inventory (I)">🎒</button><button id="btn-journal" title="Journal (L)">📜</button><button id="btn-spells" title="Spellbook (K)">✨</button><button id="btn-settings" title="Settings (O)">⚙</button><button id="btn-help" title="Help (H)">?</button></div>
+  <div id="topbtns"><button id="btn-skills" title="Skills (C)">📊</button><button id="btn-bag" title="Inventory (I)">🎒</button><button id="btn-journal" title="Journal (L)">📜</button><button id="btn-spells" title="Spellbook (K)">✨</button><button id="btn-settings" title="Settings (O)">⚙</button><button id="btn-help" title="Help (H)">?</button><button id="btn-install" class="install-btn hidden" title="Install app">📲</button></div>
   <div id="prompt" class="hidden"></div>
   <div id="toasts"></div>
   <div id="banner"></div>
@@ -78,8 +79,10 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
       <div class="cc-actions"><button id="cc-random">🎲 Random</button><button id="cc-start" class="primary" disabled>Begin your legend</button></div>
     </div>
     <p id="cc-mode" class="tag small"></p>
+    <button id="cc-install" class="install-btn hidden">📲 Install app</button>
   </div>
 </div>
+<div id="install-hint" class="hidden" role="status"><span class="ih-text"></span><button class="ih-close" aria-label="Close">✕</button></div>
 <div id="fade"></div>
 <div id="loading">Loading Mythbound…</div>
 <script type="module" src="js/main.js"></script>

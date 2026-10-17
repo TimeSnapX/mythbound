@@ -9,7 +9,7 @@ This build is **single player**: it runs fully offline, needs no server, and sav
 localStorage. Multiplayer is coming soon.
 
 Static site, no build step. three.js r170 is vendored in `vendor/` (MIT, see `vendor/THREE_LICENSE`).
-Installable as an app (manifest + network-first service worker scoped to `/mythbound/`).
+Installable as an app (manifest + network-first service worker scoped to `/mythbound/`). In-game "📲 Install app" button (title screen and HUD) uses `beforeinstallprompt`; otherwise: Chrome menu ⋮ > Add to Home screen / Install app.
 
 Run locally: `python3 -m http.server 8090` in this folder, then open http://localhost:8090/.
 
