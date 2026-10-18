@@ -1,0 +1,28 @@
+rules_version = '2';
+// Mythbound cloud saves. Each player can read/write only their own documents at users/{uid}/saves/{main|backup}.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/saves/{slot} {
+      function isOwner() { return request.auth != null && request.auth.uid == uid; }
+      function validSave() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['data', 'version', 'updatedAt', 'clientUpdatedAt', 'device', 'playtime', 'totalLevel', 'characterName'])
+          && d.keys().hasAll(['data', 'version', 'updatedAt', 'clientUpdatedAt', 'device'])
+          && d.data is string && d.data.size() > 0 && d.data.size() <= 900000
+          && d.version is number && d.clientUpdatedAt is number
+          && d.updatedAt == request.time
+          && d.device in ['phone', 'pc']
+          && (!('playtime' in d) || d.playtime is number)
+          && (!('totalLevel' in d) || d.totalLevel is number)
+          && (!('characterName' in d) || (d.characterName is string && d.characterName.size() <= 32));
+      }
+      allow read: if isOwner() && slot in ['main', 'backup'];
+      allow create, update: if isOwner() && slot in ['main', 'backup'] && validSave();
+      allow delete: if isOwner();
+    }
+    // everything else is closed
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -146,7 +146,7 @@ export function journalHtml(g) {
     ${q.state === 'locked' ? `<p class="sub">${esc(q.lockedText)}</p>` : `<ol>${q.steps.map((t, i) => `<li class="${i < q.stage ? 'done' : i === q.stage ? 'cur' : 'todo'}">${i <= q.stage || q.state === 'done' ? esc(t) : '…'}</li>`).join('')}</ol>`}</div>`).join('');
 }
 // ---------- settings ----------
-export function settingsHtml(st) {
+export function settingsHtml(st, cloudBox = '') {
   const sl = (k, label) => `<label class="set">${label}<input type="range" min="0" max="1" step="0.05" value="${st[k]}" data-set="${k}"><output>${Math.round(st[k] * 100)}%</output></label>`;
   return `<h2>⚙ Settings</h2>${sl('master', 'Master volume')}${sl('music', 'Music')}${sl('sfx', 'Sound effects')}
   <label class="set chk"><input type="checkbox" data-set="muted" ${st.muted ? 'checked' : ''}> Mute all audio</label>
@@ -154,7 +154,9 @@ export function settingsHtml(st) {
   <label class="set">Camera sensitivity <input type="range" min="0.3" max="2" step="0.1" value="${st.sens}" data-set="sens"><output>${st.sens}×</output></label>
   <label class="set chk"><input type="checkbox" data-set="bigButtons" ${st.bigButtons ? 'checked' : ''}> Large touch buttons</label>
   <label class="set chk"><input type="checkbox" data-set="invertY" ${st.invertY ? 'checked' : ''}> Invert camera Y</label>
-  <p class="sub">Settings save on this device. Quality changes to antialiasing apply after a reload.</p>`;
+  <p class="sub">Settings save on this device. Quality changes to antialiasing apply after a reload.</p>
+  <h3>☁ Cloud save</h3><div class="cloud-slot">${cloudBox}</div>
+  <div class="cloud-actions"><button data-cloud="save">💾 Save now</button></div>`;
 }
 export const HELP_HTML = `<h2>How to play</h2>
 <div class="help"><div><h3>PC</h3><ul>

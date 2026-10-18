@@ -20,6 +20,7 @@ import * as UI from './ui.js';
 import { Story, NPC_DEFS } from './story.js';
 import { RPG } from './rpg.js';
 import { Systems } from './systems.js';
+import { initCloud } from './cloud-ui.js';
 
 const SAVE_KEY = 'mythbound_save_v2', SAVE_KEY_V1 = 'mythbound_save_v1', SETTINGS_KEY = 'mythbound_settings';
 const PR = 0.4, STEP = 0.55, GRAV = 25;
@@ -94,6 +95,7 @@ export class Game {
     this.load();
     this.resize(); addEventListener('resize', () => this.resize());
     this.bindUI();
+    initCloud(this); // cloud saves (Sign in with Google + Firestore); "coming soon" while js/firebase-config.js is a placeholder
     addEventListener('beforeunload', () => this.save());
     setInterval(() => this.phase === 'play' && this.save(), 5000);
     window.MB = this; // test / debug hook
@@ -163,9 +165,29 @@ export class Game {
     const inD = zoneAt(this.p.x, this.p.z) === 'dungeon';
     if (inD) this.s.pos = this.dungeonId === 'mine' ? { x: this.ridge.mineEntrance.x - 4, z: this.ridge.mineEntrance.z } : { x: ENTRANCE.x, z: ENTRANCE.z + 5 };
     else this.s.pos = { x: +this.p.x.toFixed(2), z: +this.p.z.toFixed(2) };
-    this.s.hp = this.p.hp; this.s.v = SAVE_VERSION;
+    this.s.hp = this.p.hp; this.s.v = SAVE_VERSION; this.s.savedAt = Date.now(); this.s.playtime = +(this.s.playtime || 0).toFixed(1);
     if (!this.online) { this.s.blocks = this.building.serialize(); this.s.doors = [...this.building.open]; }
+    if (this.noSave) return; // a cloud save is being applied (page reloading)
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.s)); } catch {}
+    this.cloud?.markDirty();
+  }
+  // ---------------- cloud saves (see cloud.js / cloud-ui.js) ----------------
+  saveSummary(s) { return { characterName: s.name || '', totalLevel: SKILLS.reduce((a, k) => a + levelForXp((s.xp || {})[k] || 0), 0), playtime: Math.round(s.playtime || 0), version: s.v || 1 }; }
+  // This device's save as a cloud document (null when there is no named save). Uses the exact stored JSON string.
+  localSaveDoc(device) {
+    let raw = null, s = null;
+    try { raw = localStorage.getItem(SAVE_KEY); s = JSON.parse(raw); } catch {}
+    if (!s || !s.name) { if (this.hasSave && this.s.name) { s = this.s; raw = JSON.stringify(s); } else return null; } // e.g. a migrated v1 save not yet re-saved
+    return { data: raw, ...this.saveSummary(s), clientUpdatedAt: s.savedAt || 0, device };
+  }
+  // Use a cloud save on this device. Runs through the same v1 -> v2 migration as local saves.
+  // The save it replaces is kept in localStorage under mythbound_save_v2_before_cloud.
+  applyCloudSave(data) {
+    let o, s; try { o = JSON.parse(data); s = migrateSave(o); } catch { return false; }
+    if (!s || !s.name) return false;
+    try { const cur = localStorage.getItem(SAVE_KEY); if (cur && cur !== data) localStorage.setItem(SAVE_KEY + '_before_cloud', cur); localStorage.setItem(SAVE_KEY, s === o ? data : JSON.stringify(s)); } catch { return false; }
+    if (this.phase === 'play') { this.noSave = true; UI.banner('Cloud save loaded', 'Restarting…'); setTimeout(() => location.reload(), 600); return true; }
+    this.load(); if (o.v !== s.v) this.migrated = 1; this.showCreate(); return true;
   }
   saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch {} this.audio.apply(); document.body.classList.toggle('bigbtn', !!this.settings.bigButtons); }
   get maxHp() { return Math.min(20, this.s.maxHearts + Math.floor((this.level('combat') - 1) / 3)) * 2; }
@@ -350,7 +372,7 @@ export class Game {
     else if (kind === 'bag') UI.panel(UI.bagHtml(this), 'wide');
     else if (kind === 'help') UI.panel(UI.HELP_HTML, 'wide');
     else if (kind === 'journal') UI.panel(UI.journalHtml(this));
-    else if (kind === 'settings') UI.panel(UI.settingsHtml(this.settings));
+    else if (kind === 'settings') UI.panel(UI.settingsHtml(this.settings, this.cloudUI?.html() || ''));
     else if (kind === 'spells') UI.panel(UI.spellsHtml(this));
     else if (kind === 'capes') UI.panel(UI.capesHtml(this));
     else if (kind === 'bank') UI.panel(UI.bankHtml(this, arg || ''), 'wide');
@@ -1172,6 +1194,7 @@ export class Game {
     const loop = () => {
       requestAnimationFrame(loop);
       const dt = Math.min(0.1, this.clock.getDelta()); this.t += dt; this.frameCount = (this.frameCount || 0) + 1;
+      if (this.phase === 'play') this.s.playtime = (this.s.playtime || 0) + dt;
       this.frame(dt);
     };
     loop();

@@ -4,9 +4,11 @@
  * - Only same-origin GETs inside the app scope (/mythbound/) are handled.
  *   Cross-origin requests and anything that looks like an API call are never
  *   intercepted or cached. Game saves live in localStorage, not here. WebSockets are never touched.
+ * - Cloud saves (v2.1): Google sign-in and Firestore traffic (googleapis.com, gstatic.com, firebaseapp.com, google.com,
+ *   googleusercontent.com, firebaseio.com) is explicitly network-only: never intercepted, never cached.
  * Bump VERSION to drop old caches.
  */
-const VERSION = "v2.0.1";
+const VERSION = "v2.1.0";
 const CACHE = `mythbound-${VERSION}`;
 const SCOPE = new URL(self.registration.scope);
 const PRECACHE = [
@@ -15,13 +17,17 @@ const PRECACHE = [
   "js/main.js", "js/config.js", "js/game.js", "js/shared.js", "js/avatar.js", "js/world.js", "js/dungeon.js",
   "js/enemies.js", "js/building.js", "js/input.js", "js/net.js", "js/ui.js",
   "js/ridge.js", "js/mine.js", "js/audio.js", "js/pets.js", "js/rpg.js", "js/story.js", "js/systems.js", "js/install.js", "assets/logo.webp",
+  "js/cloud.js", "js/cloud-ui.js", "js/firebase-config.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-192.png", "icons/icon-maskable-512.png", "icons/apple-touch-icon.png"
 ];
 const NEVER = ["sw.js"];
+// Auth / Firestore hosts: always straight to the network (popup + redirect sign-in, token refresh, Firestore channels).
+const NETWORK_ONLY = /(^|\.)(googleapis\.com|gstatic\.com|firebaseapp\.com|firebaseio\.com|web\.app|google\.com|googleusercontent\.com)$/i;
 
 function handled(req) {
-  if (req.method !== "GET" || req.headers.has("range")) return false;
   const u = new URL(req.url);
+  if (NETWORK_ONLY.test(u.hostname) || u.pathname.startsWith("/__/auth/")) return false; // network-only
+  if (req.method !== "GET" || req.headers.has("range")) return false;
   if (u.origin !== SCOPE.origin || !u.pathname.startsWith(SCOPE.pathname)) return false;
   const rel = u.pathname.slice(SCOPE.pathname.length);
   if (NEVER.includes(rel)) return false;
