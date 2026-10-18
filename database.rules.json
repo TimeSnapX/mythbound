@@ -1,0 +1,23 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "relay": {
+      "$code": {
+        ".validate": "$code.matches(/^[A-HJ-NP-Z2-9]{6}$/)",
+        "$to": {
+          ".read": "auth != null && auth.uid === $to",
+          ".write": "auth != null && auth.uid === $to && !newData.exists()",
+          "$msg": {
+            ".write": "auth != null && ((!data.exists() && newData.exists() && newData.child('f').val() === auth.uid && auth.uid !== $to) || (data.exists() && !newData.exists() && auth.uid === $to))",
+            ".validate": "newData.hasChildren(['f', 'd', 't'])",
+            "f": { ".validate": "newData.isString() && newData.val() === auth.uid" },
+            "d": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 60000" },
+            "t": { ".validate": "newData.isNumber() && newData.val() <= now + 60000" },
+            "$other": { ".validate": false }
+          }
+        }
+      }
+    }
+  }
+}

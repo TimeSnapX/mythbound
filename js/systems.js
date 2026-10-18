@@ -123,7 +123,7 @@ export const Systems = {
       if (c.broken || Math.hypot(c.x - x, c.z - z) > c.r) continue;
       this.s.flags[c.flag] = true;
       if (c.pillar) { this.mine.topple(); UI.toast('The pillar cracks… and topples across the lava!', 'good'); }
-      else { this.mine.setState(this.s.flags); UI.toast(c.flag === 'q3_wall' ? 'The cracked wall crumbles — the way north is open!' : 'The wall bursts open — a hidden cache!', 'good'); }
+      else { this.mine.setState(this.mineFlags()); UI.toast(c.flag === 'q3_wall' ? 'The cracked wall crumbles — the way north is open!' : 'The wall bursts open — a hidden cache!', 'good'); }
       this.particles.burst(c.x, 1.5, c.z, 0x8a7060, 30, 6, 1); this.save();
     }
     if (!this.inDungeon) for (const s of this.ridge.secrets.values()) {
@@ -289,21 +289,22 @@ export const Systems = {
   },
   mineInteract(it) {
     const M = this.mine, f = this.s.flags;
-    if (it.kind === 'mswitch') { f.m_switch = !f.m_switch; M.setState(f); this.audio.play('door'); UI.toast(f.m_switch ? 'Clunk. The rails now point north — toward the boulder.' : 'Clunk. The rails point east, to the buffer.', ''); this.save(); }
-    else if (it.kind === 'mcart') { const r = M.pushCart(); this.audio.play('cart'); UI.toast(r === 'boulder' ? 'The cart rumbles north…' : 'The cart rumbles east…', ''); }
+    if (it.kind === 'mswitch') { f.m_switch = !f.m_switch; M.setState(this.mineFlags()); this.audio.play('door'); UI.toast(f.m_switch ? 'Clunk. The rails now point north — toward the boulder.' : 'Clunk. The rails point east, to the buffer.', ''); this.save(); }
+    else if (it.kind === 'mcart') { const r = M.pushCart(); this.coop?.onCartPushed(); this.audio.play('cart'); UI.toast(r === 'boulder' ? 'The cart rumbles north…' : 'The cart rumbles east…', ''); }
     else if (it.kind === 'flower') { if (!f.q3_bombs) return UI.toast('A Blastcap mushroom. Volatile! You need a bomb bag to carry these.', ''); const n = Math.min(3, 10 - (this.s.inv.bomb || 0)); if (n <= 0) return UI.toast('Your bomb bag is full (10).', 'bad'); if (!this.give('bomb', n)) return; it.fl.until = performance.now() + 40000; this.audio.play('pickup'); }
     else if (it.kind === 'mchest') {
       const c = it.chest === 'bomb' ? M.bombChest : it.chest === 'secret' ? M.secretChest : M.bossChest;
       if (it.chest === 'bomb') { f.q3_bombs = true; this.s.inv.bomb = Math.max(this.s.inv.bomb || 0, 10); UI.banner('You got the Bomb Bag!', this.touch ? 'Tap 💣 to throw a bomb · 10 Blastcap Bombs' : 'Press R to throw a bomb · 10 Blastcap Bombs'); UI.show('#t-bomb', true); }
       if (it.chest === 'secret') { f.m_secret_chest = true; this.giveGold(150); this.give('uncut_diamond', 1); this.give('uncut_emerald', 1); UI.banner('Secret cache!', '150 coins · an uncut diamond and emerald'); }
       if (it.chest === 'boss') { f.q3_shard = true; this.give('cinder_shard', 1); this.give('hook_cast', 1); this.giveGold(100); UI.banner('The Cinder Mythshard!', 'Also: a Hook Cast — Bram\'s anvil can forge grapple anchors with it'); }
-      this.particles.burst(c.x, 1.2, c.z, 0xffd040, 26, 4, 1); this.audio.play('quest'); M.setState(f); this.save();
+      this.particles.burst(c.x, 1.2, c.z, 0xffd040, 26, 4, 1); this.audio.play('quest'); M.setState(this.mineFlags()); this.save();
     }
   },
   onMineEvent(ev) {
-    if (ev === 'boulder') { this.s.flags.q3_cart = true; this.mine.setState(this.s.flags); this.shake = 0.5; this.audio.play('boom'); UI.toast('CRASH! The cart smashes the boulder to rubble.', 'good'); this.save(); }
+    if (this.coopGuest && ev !== 'buffer') return; // in a friend's world the host's cart breaks the boulder / bridge
+    if (ev === 'boulder') { this.s.flags.q3_cart = true; this.mine.setState(this.mineFlags()); this.shake = 0.5; this.audio.play('boom'); UI.toast('CRASH! The cart smashes the boulder to rubble.', 'good'); this.save(); }
     if (ev === 'buffer') UI.toast('The cart slams into the buffer and rolls back. Maybe the switch…?', '');
-    if (ev === 'bridge') { this.s.flags.q3_bridge = true; this.mine.setState(this.s.flags); this.shake = 0.6; this.audio.play('boom'); this.save(); }
+    if (ev === 'bridge') { this.s.flags.q3_bridge = true; this.mine.setState(this.mineFlags()); this.shake = 0.6; this.audio.play('boom'); this.save(); }
   },
   // ---------- v2 building ----------
   aimCell() {
@@ -321,18 +322,21 @@ export const Systems = {
     // never target the cell the player stands in unless it's a flat piece
     return { ...hit, k: hit.gx + ',' + hit.gz };
   },
-  inPlot(gx, gz) { const pl = this.s.home?.plot; return !!pl && gx >= pl.gx && gx < pl.gx + PLOT_CELLS && gz >= pl.gz && gz < pl.gz + PLOT_CELLS; },
+  inPlot(gx, gz) { const pl = this.coopGuest ? this.coop?.hostPlot : this.s.home?.plot; return !!pl && gx >= pl.gx && gx < pl.gx + PLOT_CELLS && gz >= pl.gz && gz < pl.gz + PLOT_CELLS; },
   pieceRefusal(gx, gz, type) {
     const stack = this.building.stacks.get(gx + ',' + gz) || [];
     const r = buildRefusal(gx, gz, stack.length); if (r) return r;
     const last = stack.length && PIECES[pieceType(stack[stack.length - 1])];
     if (last && last.top === false) return `You can't build on top of a ${last.name}.`;
+    if (this.coopGuest && !this.inPlot(gx, gz)) return "In a friend's world you can only build on the host's home plot.";
+    if (this.coopGuest && type === 'hearth') return 'Only the host can raise a Hearthstone in their world.';
     if (PIECES[type].plot && !this.inPlot(gx, gz)) return `${PIECES[type].name}s can only go on your home plot (claim one with P / 🏠).`;
     const pl = this.s.home?.plot; if (this.plotsOther?.(gx, gz)) return 'That land belongs to someone else.';
     return null;
   },
   costFor(type) { const P = PIECES[type]; return P.alt && this.has(P.alt) && !this.has(P.cost) ? P.alt : P.cost; },
   claimPlot() {
+    if (this.coopGuest) { UI.toast("You can't claim land in a friend's world.", 'bad'); return false; }
     const { gx, gz } = this.aimCell(), g0 = gx - PLOT_CELLS / 2, h0 = gz - PLOT_CELLS / 2;
     for (const [a, b] of [[g0, h0], [g0 + PLOT_CELLS - 1, h0], [g0, h0 + PLOT_CELLS - 1], [g0 + PLOT_CELLS - 1, h0 + PLOT_CELLS - 1], [gx, gz]]) { const r = buildRefusal(a, b, 0); if (r) { UI.toast('Can\'t claim here: ' + r, 'bad'); return false; } }
     const moving = !!this.s.home?.plot;

@@ -35,6 +35,7 @@ Setup takes about 10 minutes and is all done in the browser.
 ```
 rules_version = '2';
 // Mythbound cloud saves. Each player can read/write only their own documents at users/{uid}/saves/{main|backup}.
+// v2.2 adds co-op lobby signaling under /lobbies (below the save rules, which are unchanged).
 service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid}/saves/{slot} {
@@ -55,6 +56,69 @@ service cloud.firestore {
       allow create, update: if isOwner() && slot in ['main', 'backup'] && validSave();
       allow delete: if isOwner();
     }
+
+    // ---- v2.2 co-op signaling (WebRTC offer / answer / ICE candidates). The game itself runs peer-to-peer. ----
+    // lobbies/{code}: one per hosted world, 6-character code, expires 2 h after it was opened (expiresAt, checked by
+    // the game client and by the rules below). Only signed-in players can create or read lobbies.
+    function signedIn() { return request.auth != null; }
+    function lobbyCode(code) { return code.matches('^[A-HJ-NP-Z2-9]{6}$'); }
+    function lobby(code) { return get(/databases/$(database)/documents/lobbies/$(code)).data; }
+    function lobbyOpen(code) { return exists(/databases/$(database)/documents/lobbies/$(code)) && lobby(code).expiresAt > request.time; }
+    function isHost(code) { return signedIn() && exists(/databases/$(database)/documents/lobbies/$(code)) && lobby(code).hostUid == request.auth.uid; }
+    function sdpOk(x) { return x is map && x.keys().hasOnly(['type', 'sdp']) && x.type is string && x.sdp is string && x.sdp.size() <= 20000; }
+    match /lobbies/{code} {
+      function validLobby() {
+        let d = request.resource.data;
+        return lobbyCode(code)
+          && d.keys().hasOnly(['code', 'hostUid', 'hostName', 'createdAt', 'expiresAt', 'max', 'v'])
+          && d.keys().hasAll(['code', 'hostUid', 'hostName', 'createdAt', 'expiresAt'])
+          && d.code == code && d.hostUid == request.auth.uid
+          && d.hostName is string && d.hostName.size() <= 16
+          && d.createdAt == request.time
+          && d.expiresAt is timestamp && d.expiresAt > request.time && d.expiresAt <= request.time + duration.value(125, 'm')
+          && (!('max' in d) || d.max == 4) && (!('v' in d) || d.v is number);
+      }
+      allow read: if signedIn();
+      allow create: if signedIn() && validLobby();
+      // re-open your own lobby, or take over a code whose lobby has expired
+      allow update: if signedIn() && validLobby() && (resource.data.hostUid == request.auth.uid || resource.data.expiresAt < request.time);
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      // lobbies/{code}/peers/{uid}: a guest's join request. The guest creates it; only the host writes the offer,
+      // only that guest writes the answer.
+      match /peers/{uid} {
+        function isGuest() { return signedIn() && request.auth.uid == uid; }
+        function freshJoin() {
+          let d = request.resource.data;
+          return d.keys().hasOnly(['uid', 'name', 'joinedAt']) && d.uid == uid && d.name is string && d.name.size() <= 16
+            && d.joinedAt == request.time && lobbyOpen(code) && lobby(code).hostUid != uid;
+        }
+        function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+        allow read: if isGuest() || isHost(code);
+        allow create: if isGuest() && freshJoin();
+        allow update: if (isHost(code) && changed().hasOnly(['offer']) && sdpOk(request.resource.data.offer))
+                      || (isGuest() && changed().hasOnly(['answer']) && sdpOk(request.resource.data.answer))
+                      || (isGuest() && freshJoin());
+        allow delete: if isGuest() || isHost(code);
+
+        // trickled ICE candidates, one subcollection per side
+        function validCand() {
+          let d = request.resource.data;
+          return d.keys().hasOnly(['cand', 'at']) && d.cand is string && d.cand.size() <= 2000 && d.at == request.time;
+        }
+        match /hostCandidates/{id} {
+          allow read: if isGuest() || isHost(code);
+          allow create: if isHost(code) && validCand();
+          allow delete: if isGuest() || isHost(code);
+        }
+        match /guestCandidates/{id} {
+          allow read: if isGuest() || isHost(code);
+          allow create: if isGuest() && lobbyOpen(code) && validCand();
+          allow delete: if isGuest() || isHost(code);
+        }
+      }
+    }
+
     // everything else is closed
     match /{document=**} {
       allow read, write: if false;
@@ -64,6 +128,8 @@ service cloud.firestore {
 ```
 
 What the rules do:
+- The cloud-save part (`users/{uid}/saves/...`) is unchanged from v2.1. v2.2 adds the co-op `lobbies` rules, see
+  [COOP_SETUP.md](COOP_SETUP.md). Already published the v2.1 rules? Publish this whole file again.
 - A signed-in player can only read and write `users/<their uid>/saves/main` and `users/<their uid>/saves/backup`.
 - Everything else in the database is denied.
 - A save must have the expected fields, `updatedAt` must be the server time, and the save JSON (`data`) is capped at
@@ -138,3 +204,7 @@ Then publish the site as usual. No service-worker bump is needed for a config-on
 - If you restrict the API key in Google Cloud Console (APIs & Services → Credentials), the HTTP referrers must include
   `https://timesnapx.github.io/*` **and** `https://<project-id>.firebaseapp.com/*`.
 - For testing without a Firebase project, `?debug=1&cloud=mock` uses an in-memory mock, and `?cloud=off` hides cloud saves.
+
+## Co-op (v2.2)
+Online co-op uses the same project: the lobby rules above, plus an optional Realtime Database relay for players on strict
+networks. See [COOP_SETUP.md](COOP_SETUP.md).

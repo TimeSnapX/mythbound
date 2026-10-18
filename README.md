@@ -5,14 +5,36 @@ Hollow Barrow dungeon. Plays on PC (keyboard + mouse) and phones (touch controls
 
 **Play:** https://timesnapx.github.io/mythbound/
 
-This build is **single player**: it runs fully offline, needs no server, and saves progress in your browser's
-localStorage. Optional **cloud saves** (Sign in with Google + Firestore) sync progress between phone and PC once a Firebase
-project is configured. See `FIREBASE_SETUP.md`. Multiplayer is coming soon.
+Solo by default: it runs fully offline, needs no server, and saves progress in your browser's localStorage. **Cloud saves**
+(Sign in with Google + Firestore) sync progress between phone and PC; see `FIREBASE_SETUP.md`. **Free online co-op for 2–4
+players** (v2.2) runs peer-to-peer between the players' browsers, with no game server; see `COOP_SETUP.md`.
 
 Static site, no build step. three.js r170 is vendored in `vendor/` (MIT, see `vendor/THREE_LICENSE`).
 Installable as an app (manifest + network-first service worker scoped to `/mythbound/`). In-game "📲 Install app" button (title screen and HUD) uses `beforeinstallprompt`; otherwise: Chrome menu ⋮ > Add to Home screen / Install app.
 
 Run locally: `python3 -m http.server 8090` in this folder, then open http://localhost:8090/.
+
+## v2.2.0 — changelog
+- **Online co-op (2–4 players, free)**: 👥 Co-op button on the title screen and in Settings.
+  - **Host World** shows a 6-character code with 📋 Copy and 🔗 Invite buttons. Invite uses the phone share sheet when there is one, and otherwise copies a `?join=CODE` link. **Join World** takes a code; opening an invite link pre-fills it.
+  - You must be signed in with Google to host or join. Everyone keeps their own character, skills, inventory and save, and progress only ever saves to your own cloud save.
+  - The lobby lists players with hearts and ping. HUD party frames show names and hearts, and there are quick emotes (👋 🎉 👍 ❗ 😄 or `/wave` etc.) and chat with a light profanity filter.
+- **How it works**: the host's browser is the authority. It runs enemies, bosses, drops, doors and dungeon puzzles, and validates every guest message (rate limits, movement speed and teleport checks, attack reach, damage caps; no item or XP injection).
+  - Guests send inputs and actions and render 12 Hz snapshots with interpolation.
+  - Transport is a WebRTC data channel (Google STUN) with Firestore signaling at `lobbies/{code}`. If a direct link is blocked, the game falls back automatically to a low-rate relay through the Firebase Realtime Database (`relay/{code}/{uid}`, 4 Hz). If `databaseURL` isn't set, players see "Couldn't connect directly, try another network".
+- **Shared world rules**:
+  - Kill XP goes to everyone within 30 m. Loot is personal: each player rolls their own drops.
+  - Boss HP scales ×1 / ×1.75 / ×2.5 / ×3.25 with party size.
+  - Building is allowed only on the host's home plot, and only when the host ticks "Let friends build".
+  - Downed players can be revived by a friend holding interact for 3 s, or they respawn at a Hearthstone after 20 s.
+- **Disconnects**: if the host leaves, guests return to their own world with their progress saved. If a guest leaves, the host carries on.
+- **Solo is unchanged**: nothing co-op related loads or connects until you press Host or Join.
+- **Files**:
+  - `js/coop.js` (session logic), `js/coop-net.js` (links, limits, codes), `js/coop-ui.js`, `js/coop-firebase.js`, `js/coop-mock.js` (tests).
+  - `vendor/firebase/firebase-database.js`, loaded only when the relay is needed.
+  - `firestore.rules` gains the lobby rules (save rules unchanged). `database.rules.json` holds the relay rules.
+- **Debug**: `?debug=1&coop=mock&coophub=ws://…` (test hub), `&direct=block`, `&relay=off`, `&p2ptimeout=ms`, `window.MB_COOP_ADAPTERS`. Use `?debug=1&fbconfig=placeholder` or `window.MB_FIREBASE_CONFIG` to simulate an unconfigured build.
+- **Service worker**: v2.2.0. Firebase and Google hosts, including `*.firebasedatabase.app`, are network-only.
 
 ## v2.1.0 — changelog
 - **Cloud saves**:

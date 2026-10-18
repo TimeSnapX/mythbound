@@ -551,8 +551,8 @@ export class EnemySim {
     for (const s of spawns) this.enemies.set(s.id, this.make(s));
   }
   make(s) {
-    const T = ENEMY_TYPES[s.type];
-    return { id: s.id, type: s.type, sx: s.x, sz: s.z, x: s.x, z: s.z, ry: s.ry || 0, hp: T.hp, max: T.hp, state: 'idle', st: 0,
+    const T = ENEMY_TYPES[s.type], hp = T.boss && this.bossScale > 1 ? Math.round(T.hp * this.bossScale) : T.hp; // co-op: bosses scale HP with party size
+    return { id: s.id, type: s.type, sx: s.x, sz: s.z, x: s.x, z: s.z, ry: s.ry || 0, hp, max: hp, state: 'idle', st: 0,
       alive: true, atk: 0, kind: 'a', wx: s.x, wz: s.z, cd: 0, dx: 0, dz: 1, kx: 0, kz: 0, n: 0, spots: s.spots || null, spot: 0, phase: 1, cx: s.cx, cz: s.cz };
   }
   set(e, s) { e.state = s; e.st = 0; }
@@ -697,7 +697,7 @@ export class EnemySim {
   }
   // Magmaw: surfaces at a lava spot, inhales (bomb its mouth!), breathes fire, sinks. Stunned = molten heart exposed.
   updateMagmaw(e, T, dt, tgt, td, ev) {
-    const ph = e.hp <= 8 ? 3 : e.hp <= 16 ? 2 : 1;
+    const ph = e.hp <= e.max / 3 ? 3 : e.hp <= e.max * 2 / 3 ? 2 : 1; // thirds of max HP (8 / 16 of 24 solo)
     if (ph !== e.phase) { e.phase = ph; ev.push({ t: 'phase', id: e.id, phase: ph }); }
     const face = () => { if (tgt) e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z); e.dx = Math.sin(e.ry); e.dz = Math.cos(e.ry); };
     const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
@@ -747,7 +747,7 @@ export class EnemySim {
         return { ok: true, stunned: true, hp: e.hp };
       }
       if (e.state !== 'stunned') return { ok: true, blocked: true, hp: e.hp };
-      const before = e.phase, after = e.hp - dmg <= 8 ? 3 : e.hp - dmg <= 16 ? 2 : 1;
+      const before = e.phase, after = e.hp - dmg <= e.max / 3 ? 3 : e.hp - dmg <= e.max * 2 / 3 ? 2 : 1;
       e.hp = Math.max(0, e.hp - dmg);
       if (e.hp <= 0) { e.alive = false; this.set(e, 'dead'); return { ok: true, killed: true, hp: 0, xp: T.xp }; }
       if (after !== before) this.set(e, 'submerging'); // phase change: it dives early

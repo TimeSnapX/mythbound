@@ -21,6 +21,8 @@ import { Story, NPC_DEFS } from './story.js';
 import { RPG } from './rpg.js';
 import { Systems } from './systems.js';
 import { initCloud } from './cloud-ui.js';
+import { initCoop } from './coop-ui.js';
+import { zoneKey, DOWN_TIME, XP_RANGE, PUZZLE_KEYS } from './coop.js';
 
 const SAVE_KEY = 'mythbound_save_v2', SAVE_KEY_V1 = 'mythbound_save_v1', SETTINGS_KEY = 'mythbound_settings';
 const PR = 0.4, STEP = 0.55, GRAV = 25;
@@ -83,7 +85,7 @@ export class Game {
     this.todOverride = params.has('tod') ? +params.get('tod') : null;
     this.cam = { yaw: 0, pitch: 0.38, dist: 7.5, pos: new THREE.Vector3(0, 20, 40) };
     this.views = new Map(); this.remotes = new Map(); this.netEnemies = new Map();
-    this.hitSeen = new Map(); this.enemySpawnType = new Map(generateEnemySpawns().map((s) => [s.id, s.type]));
+    this.hitSeen = new Map(); this.enemySpawnType = new Map([...generateEnemySpawns(), ...DUNGEON_SPAWNS, ...MINE_SPAWNS].map((s) => [s.id, s.type]));
     this.phase = 'create'; this.buildMode = false; this.piece = 'wood'; this.rot = 0; this.messages = [];
     this.localSim = new EnemySim(generateEnemySpawns());
     this.msim = new EnemySim([]);
@@ -96,6 +98,7 @@ export class Game {
     this.resize(); addEventListener('resize', () => this.resize());
     this.bindUI();
     initCloud(this); // cloud saves (Sign in with Google + Firestore); "coming soon" while js/firebase-config.js is a placeholder
+    initCoop(this); // v2.2 online co-op (host-authoritative WebRTC, Firestore signaling, RTDB relay fallback); solo is unchanged until you host or join
     addEventListener('beforeunload', () => this.save());
     setInterval(() => this.phase === 'play' && this.save(), 5000);
     window.MB = this; // test / debug hook
@@ -192,10 +195,13 @@ export class Game {
   saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings)); } catch {} this.audio.apply(); document.body.classList.toggle('bigbtn', !!this.settings.bigButtons); }
   get maxHp() { return Math.min(20, this.s.maxHearts + Math.floor((this.level('combat') - 1) / 3)) * 2; }
   level(skill) { return levelForXp(this.s.xp[skill] || 0); }
-  dstate() { const f = this.s.flags; return { chest: f.grapple, lever: f.lever, boss: f.boss, bossChest: f.shard }; }
+  // co-op guests see the host's dungeon puzzle state (levers, rails, bosses); chests stay personal
+  worldFlag(k) { const H = this.coopGuest && this.coop?.hostPuzzle; return H && PUZZLE_KEYS.includes(k) ? !!H[k] : !!this.s.flags[k]; }
+  mineFlags() { const H = this.coopGuest && this.coop?.hostPuzzle; return H ? { ...this.s.flags, m_switch: !!H.m_switch, q3_cart: !!H.q3_cart, q3_bridge: !!H.q3_bridge, q3_boss: !!H.q3_boss } : this.s.flags; }
+  dstate() { const f = this.s.flags; return { chest: f.grapple, lever: this.worldFlag('lever'), boss: this.worldFlag('boss'), bossChest: f.shard }; }
   applyWorldState() {
     const f = this.s.flags;
-    this.dungeon.setState(this.dstate()); this.mine.setState(f);
+    this.dungeon.setState(this.dstate()); this.mine.setState(this.mineFlags());
     for (const h of HEARTHSTONES) if (h.flag) this.ridge.setHearthLit(h.id, !!f[h.flag]);
     for (const fp of this.ridge.fog.values()) this.ridge.setFogCleared(fp.id, this.fogCleared(fp));
     for (const s of this.ridge.secrets.values()) this.ridge.setSecret(s.id, !!f[s.id + '_b'], !!f[s.id + '_o']);
@@ -254,6 +260,47 @@ export class Game {
     else UI.netBadge('Solo · offline', 'offline');
     this.save();
   }
+  // ---------------- co-op (see coop.js) ----------------
+  // Guest: the host welcomed us. Show the host's world (enemies, nodes, builds, puzzle state); our own save is not touched.
+  coopEnterHost(m, C) {
+    if (this.buildMode) this.toggleBuild();
+    this.closePanel?.(); this.p.lock = null;
+    this.coopGuest = true; this.online = true; this.myId = C.me; this.net = { send: (x) => C.toHost(x) };
+    for (const id of [...this.remotes.keys()]) this.removeRemote(id);
+    for (const q of m.players || []) this.addRemote({ ...q, name: String(q.name || '').slice(0, 16) });
+    this.building.clear(); for (const [k, arr] of m.blocks || []) if (typeof k === 'string' && Array.isArray(arr)) this.building.setStack(k, arr);
+    for (const key of m.doors || []) { const [k, i] = String(key).split('#'); if (this.building.stacks.get(k)) this.building.toggleDoor(k, +i); }
+    for (const n of this.world.nodes.values()) if (n.depleted) this.world.setNodeDepleted(n.id, false);
+    for (const id of m.nodes || []) this.world.setNodeDepleted(id, true);
+    for (const v of this.views.values()) v.dispose(); this.views.clear(); this.netEnemies.clear(); this.netProj = [];
+    this.applyEnemySnap(m.e || []);
+    C.hostPuzzle = m.puzzle || {}; C.hostPlot = m.plot || null; C.allowBuild = !!m.perms?.build;
+    this.applyWorldState(); this.drawPlot();
+    const y = Number.isFinite(m.you?.x) ? this.fade(() => { this.debug.teleport(m.you.x, m.you.z); this.cam.snap = true; }) : null;
+    UI.netBadge(`Co-op · ${C.via === 'relay' ? 'relay' : 'direct'}`, 'online');
+    UI.banner(`${C.lobby?.hostName || 'Your friend'}'s world`, 'Co-op · your own character, items and save');
+    UI.chatLine(null, `Joined ${C.lobby?.hostName || 'the host'}'s world. Press Enter to chat. Your progress keeps saving to your own save.`, 'sys');
+    this.onCoopChange?.(); this.save();
+  }
+  // Guest: back to our own world (host left, link dropped, or we left). Progress was saved all along; save again now.
+  coopReturnHome(msg) {
+    this.coopGuest = false; this.online = false; this.net = null; this.myId = null; this.netProj = [];
+    for (const id of [...this.remotes.keys()]) this.removeRemote(id);
+    if (this.buildMode) this.toggleBuild();
+    for (const v of this.views.values()) v.dispose(); this.views.clear(); this.netEnemies.clear();
+    this.localSim = new EnemySim(generateEnemySpawns()); this.resetDungeonSim(); this.resetMineSim();
+    this.building.clear(); for (const [k, arr] of this.s.blocks || []) this.building.setStack(k, arr);
+    for (const key of this.s.doors || []) { const [k, i] = key.split('#'); if (this.building.stacks.get(k)) this.building.toggleDoor(k, +i); }
+    for (const n of this.world.nodes.values()) if (n.depleted) this.world.setNodeDepleted(n.id, false);
+    if (this.p.mode === 'dead') { this.p.mode = 'normal'; this.p.hp = Math.max(2, Math.ceil(this.maxHp / 2)); this.downedT = 0; }
+    if (this.inDungeon) { const mine = this.dungeonId === 'mine'; const pt = mine ? { x: this.ridge.mineEntrance.x - 4, z: this.ridge.mineEntrance.z } : { x: ENTRANCE.x, z: ENTRANCE.z + 5 }; this.debug.teleport(pt.x, pt.z); }
+    this.applyWorldState(); this.drawPlot();
+    UI.netBadge('Solo · offline', 'offline');
+    UI.banner('Back in your own world', 'Progress saved');
+    UI.chatLine(null, msg + ' Your progress is saved.', 'sys');
+    this.save(); this.cloud?.flush();
+    this.onCoopChange?.();
+  }
   // ---------------- networking ----------------
   async connect() {
     UI.netBadge('Connecting…', 'warn');
@@ -291,28 +338,52 @@ export class Game {
     else { UI.netBadge('Server unreachable · solo', 'warn'); UI.chatLine(null, 'Could not reach the server — playing solo.', 'sys'); }
   }
   applyEnemySnap(list) {
-    for (const [id, x, z, ry, state, st, hp, alive, kind, atk] of list) {
+    for (const [id, x, z, ry, state, st, hp, alive, kind, atk, max, t] of list) {
       let e = this.netEnemies.get(id);
-      const type = this.enemySpawnType.get(id);
+      const type = this.enemySpawnType.get(id) || (ENEMY_TYPES[t] ? t : null); if (!type) continue;
       if (!e) { e = { id, type, max: ENEMY_TYPES[type].hp }; this.netEnemies.set(id, e); }
       if (e.state !== state) e.st = st;
       Object.assign(e, { x, z, ry, state, hp, alive: !!alive, kind, atk });
+      if (Number.isFinite(max) && max > 0) e.max = max; // co-op: bosses scale with party size
     }
+  }
+  // co-op guest: the host reports a hit / kill. Kill XP goes to everyone nearby; loot is rolled on each player's own device.
+  coopEnemyHit(m) {
+    const e = this.netEnemies.get(m.id);
+    if (e) { e.hp = m.hp; if (Number.isFinite(m.max)) e.max = m.max; if (m.killed) { e.alive = false; e.state = 'dead'; e.st = 0; } if (m.flipped) { e.state = 'flipped'; e.st = 0; } if (m.stunned) { e.state = 'stunned'; e.st = 0; } }
+    const mineHit = m.by === this.myId, p = this.p;
+    const near = Number.isFinite(m.x) && zoneKey(p.x, p.z) === zoneKey(m.x, m.z) && Math.hypot(m.x - p.x, m.z - p.z) < XP_RANGE;
+    const r = { ok: true, hp: m.hp, blocked: !!m.blocked, killed: !!m.killed, flipped: !!m.flipped, stunned: !!m.stunned };
+    if ((r.flipped || r.stunned || r.blocked) && !mineHit) { const v = this.views.get(m.id); v?.flash(r.blocked ? 0x4466ff : 0xffd040); return; }
+    this.onEnemyDamaged(m.id, r, r.killed ? near : mineHit, mineHit ? this.pendingSkill || 'combat' : 'combat');
   }
   addRemote(p) {
     if (p.id === this.myId || this.remotes.has(p.id)) return;
     const av = buildAvatar(p.look); this.scene.add(av.root);
     const label = makeLabel(p.name, '#bfe4ff', 0.85); this.scene.add(label);
-    this.remotes.set(p.id, { id: p.id, name: p.name, av, label, x: p.x, y: p.y, z: p.z, ry: p.ry || 0, tx: p.x, ty: p.y, tz: p.z, tr: p.ry || 0, a: p.a || 'idle', at: 0 });
+    this.remotes.set(p.id, { id: p.id, name: p.name, av, label, x: p.x, y: p.y, z: p.z, ry: p.ry || 0, tx: p.x, ty: p.y, tz: p.z, tr: p.ry || 0, a: p.a || 'idle', at: 0, host: !!p.host });
+  }
+  // co-op: a new position sample for a remote player (interpolated in updateRemotes with a small delay)
+  remoteSample(id, x, y, z, ry, a, dead) {
+    const r = this.remotes.get(id); if (!r || ![x, y, z].every(Number.isFinite)) return;
+    const t = performance.now(); r.buf ||= [];
+    const last = r.buf[r.buf.length - 1];
+    if (last) r.iv = r.iv ? r.iv * 0.8 + (t - last.t) * 0.2 : t - last.t;
+    if (Math.hypot(x - r.tx, z - r.tz) > 15) { r.buf.length = 0; r.x = x; r.y = y; r.z = z; } // teleport: snap
+    r.buf.push({ t, x, y, z, ry: Number.isFinite(ry) ? ry : r.tr }); if (r.buf.length > 24) r.buf.shift();
+    r.tx = x; r.ty = y; r.tz = z; r.tr = Number.isFinite(ry) ? ry : r.tr;
+    a = typeof a === 'string' ? a.slice(0, 12) : 'idle'; if (r.a !== a) { r.a = a; r.at = 0; }
+    r.dead = !!dead;
   }
   removeRemote(id) { const r = this.remotes.get(id); if (!r) return; this.scene.remove(r.av.root); this.scene.remove(r.label); this.remotes.delete(id); }
   sendState(dt) {
     if (!this.online) return;
     this.sendT = (this.sendT || 0) + dt;
-    if (this.sendT < 0.1 && !this.tpFlag) return;
+    const iv = this.coopGuest ? 1 / (this.coop.via === 'relay' ? 4 : 12) : 0.1; // co-op: 12 Hz direct, 4 Hz over the relay
+    if (this.sendT < iv && !this.tpFlag) return;
     this.sendT = 0;
     const p = this.p;
-    this.net.send({ t: 'state', x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2), ry: +p.ry.toFixed(2), a: this.animName(), dead: p.mode === 'dead', sword: this.s.sword, tp: this.tpFlag ? 1 : 0 });
+    this.net.send({ t: 'state', x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2), ry: +p.ry.toFixed(2), a: this.animName(), dead: p.mode === 'dead', sword: this.s.sword, tp: this.tpFlag ? 1 : 0, hp: p.hp, mhp: this.maxHp });
     this.tpFlag = false;
   }
 
@@ -362,6 +433,7 @@ export class Game {
     });
   }
   sendChat(text) {
+    if (this.coop?.active) return this.coop.chat(text);
     if (this.online) this.net.send({ t: 'chat', text });
     else { UI.chatLine(this.s.name, text, 'me'); UI.chatLine(null, '(Solo mode — nobody else can hear you.)', 'sys'); }
   }
@@ -455,25 +527,44 @@ export class Game {
   }
 
   // ---------------- enemies ----------------
+  // co-op host: don't reset a dungeon that friends are still fighting in
+  canResetDungeon(id) { return !(this.coop?.isHost && this.coop.joinedPeers.some((q) => zoneKey(q.x, q.z) === id)); }
   resetDungeonSim() {
     const spawns = DUNGEON_SPAWNS.filter((s) => !(s.id === 'd_warden' && this.s.flags.boss));
     this.dsim = new EnemySim(spawns, { height: dungeonHeight, blocked: (x, z) => this.dungeon.blocked(x, z), respawn: false });
     for (const [id, v] of this.views) if (id.startsWith('d_')) { v.dispose(); this.views.delete(id); }
+    this.coop?.applyBossScale();
   }
   resetMineSim() {
     const spawns = MINE_SPAWNS.filter((s) => !(s.id === 'm_magmaw' && this.s.flags.q3_boss));
     this.msim = new EnemySim(spawns, { height: mineHeight, blocked: (x, z) => this.mine.blocked(x, z), respawn: false });
     for (const [id, v] of this.views) if (id.startsWith('m_')) { v.dispose(); this.views.delete(id); }
+    this.coop?.applyBossScale();
   }
   overworldEnemies() { return this.online ? this.netEnemies : this.localSim.enemies; }
-  allEnemies() { const out = []; for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); for (const e of this.msim.enemies.values()) out.push(e); return out; }
-  enemyById(id) { return id.startsWith('d_') ? this.dsim.enemies.get(id) : id.startsWith('m_') ? this.msim.enemies.get(id) : this.overworldEnemies().get(id); }
+  allEnemies() { const out = []; if (this.coopGuest) { for (const e of this.netEnemies.values()) out.push(e); return out; } for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); for (const e of this.msim.enemies.values()) out.push(e); return out; }
+  enemyById(id) { if (this.coopGuest) return this.netEnemies.get(id); return id.startsWith('d_') ? this.dsim.enemies.get(id) : id.startsWith('m_') ? this.msim.enemies.get(id) : this.overworldEnemies().get(id); }
+  simFor(id) { return id.startsWith('d_') ? this.dsim : id.startsWith('m_') ? this.msim : this.localSim; }
+  // co-op host with friends connected: every sim runs for everyone in its zone, events are tagged with their zone
+  updateEnemiesHost(dt) {
+    const C = this.coop, myZ = zoneKey(this.p.x, this.p.z), evs = [];
+    const all = [{ id: 'me', x: this.p.x, z: this.p.z, dead: this.p.mode === 'dead' }];
+    for (const q of C.joinedPeers) if (q.has) all.push({ id: q.uid, x: q.x, z: q.z, dead: q.dead });
+    const run = (sim, zk, always) => { const ps = all.filter((p) => zoneKey(p.x, p.z) === zk); if (!ps.length && !always) return; for (const ev of sim.update(dt, ps)) { ev.zn = zk; evs.push(ev); } };
+    run(this.localSim, 'ow', true); run(this.dsim, 'barrow'); run(this.msim, 'mine');
+    for (const ev of evs) if (ev.zn === myZ) this.handleEnemyEvent(ev);
+    C.hostEvents(evs);
+  }
   updateEnemies(dt) {
     const me = [{ id: 'me', x: this.p.x, z: this.p.z, dead: this.p.mode === 'dead' }];
-    if (!this.online) for (const ev of this.localSim.update(dt, me)) this.handleEnemyEvent(ev);
-    else for (const e of this.netEnemies.values()) e.st += dt;
-    if (this.dungeonId === 'barrow') for (const ev of this.dsim.update(dt, me)) this.handleEnemyEvent(ev);
-    if (this.dungeonId === 'mine') for (const ev of this.msim.update(dt, me)) this.handleEnemyEvent(ev);
+    if (this.coopGuest) { for (const e of this.netEnemies.values()) e.st += dt; }
+    else if (this.coop?.isHost && this.coop.joinedPeers.length) this.updateEnemiesHost(dt);
+    else {
+      if (!this.online) for (const ev of this.localSim.update(dt, me)) this.handleEnemyEvent(ev);
+      else for (const e of this.netEnemies.values()) e.st += dt;
+      if (this.dungeonId === 'barrow') for (const ev of this.dsim.update(dt, me)) this.handleEnemyEvent(ev);
+      if (this.dungeonId === 'mine') for (const ev of this.msim.update(dt, me)) this.handleEnemyEvent(ev);
+    }
     for (const e of this.allEnemies()) {
       let v = this.views.get(e.id);
       if (!v) { v = new EnemyView(this.scene, e); this.views.set(e.id, v); }
@@ -484,10 +575,11 @@ export class Game {
     // fireballs from Cinder Imps
     this.fireballs ||= new Map();
     const live = new Set();
-    for (const sim of [this.localSim, this.msim]) for (const q of sim.proj) {
-      live.add(q.n + ':' + q.id);
-      let m = this.fireballs.get(q.n + ':' + q.id);
-      if (!m) { m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 0), new THREE.MeshBasicMaterial({ color: 0xff6a10 })); this.scene.add(m); this.fireballs.set(q.n + ':' + q.id, m); }
+    const projs = this.coopGuest ? (this.netProj || []).map(([key, x, z]) => ({ key, x, z })) : [this.localSim, this.msim].flatMap((sim) => sim.proj.map((q) => ({ key: q.n + ':' + q.id, x: q.x, z: q.z })));
+    for (const q of projs) {
+      live.add(q.key);
+      let m = this.fireballs.get(q.key);
+      if (!m) { m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 0), new THREE.MeshBasicMaterial({ color: 0xff6a10 })); this.scene.add(m); this.fireballs.set(q.key, m); }
       m.position.set(q.x, this.terrainH(q.x, q.z) + 1.2, q.z); m.rotation.y += dt * 8;
     }
     for (const [k, m] of this.fireballs) if (!live.has(k)) { this.scene.remove(m); this.fireballs.delete(k); }
@@ -530,14 +622,22 @@ export class Game {
   }
   die() {
     const p = this.p; p.mode = 'dead'; p.mt = 0; p.lock = null;
-    UI.banner('You have fallen…', 'The legend is not over yet');
+    if (this.coop?.active && this.coop.partySize > 1) { this.downedT = DOWN_TIME; UI.banner('You are down!', `A friend can revive you (hold ${this.touch ? '✋' : 'E'} for 3 s) · or you respawn at a Hearthstone`); }
+    else UI.banner('You have fallen…', 'The legend is not over yet');
+  }
+  // co-op: a friend held interact next to you for 3 s
+  coopRevived(by) {
+    const p = this.p; if (p.mode !== 'dead') return;
+    p.mode = 'normal'; p.mt = 0; p.hp = Math.max(2, Math.ceil(this.maxHp / 2)); p.inv = 2; p.stam = 100; this.downedT = 0;
+    this.particles.burst(p.x, p.y + 1.2, p.z, 0x80ffb0, 30, 4, 1); this.audio.play('heal');
+    UI.banner('Revived!', `${by} got you back on your feet`); this.tpFlag = true;
   }
   respawnPoint() {
     if (this.inDungeon) {
       if (this.dungeonId === 'mine') { const z = this.p.z; return z < -112 ? MINE_CP.arena : z < -91 && this.s.flags.q3_bridge ? MINE_CP.lavaN : z < -60 ? MINE_CP.lava : MINE_START; }
       return DUNGEON_START;
     }
-    if (this.s.home?.hearth) return { x: this.s.home.hearth.x + 1.5, z: this.s.home.hearth.z + 1.5 };
+    if (this.s.home?.hearth && !this.coopGuest) return { x: this.s.home.hearth.x + 1.5, z: this.s.home.hearth.z + 1.5 }; // in a friend's world: the village / camp Hearthstone
     return this.p.x > 150 ? { x: CAMP.x + 1, z: CAMP.z + 2 } : SPAWN;
   }
   respawn() {
@@ -545,8 +645,8 @@ export class Game {
     this.fade(() => {
       const pt = this.respawnPoint();
       this.debug.teleport(pt.x, pt.z); p.hp = this.maxHp; p.mode = 'normal'; p.inv = 2; p.stam = 100; this.s.fade = 0;
-      if (inD && did === 'barrow') this.resetDungeonSim();
-      if (inD && did === 'mine') this.resetMineSim();
+      if (inD && did === 'barrow' && this.canResetDungeon('barrow')) this.resetDungeonSim();
+      if (inD && did === 'mine' && this.canResetDungeon('mine')) this.resetMineSim();
     });
   }
   targetables() {
@@ -592,15 +692,17 @@ export class Game {
     this.particles.burst(e.x - Math.sin(ang) * T.radius, this.terrainH(e.x, e.z) + 1.1, e.z - Math.cos(ang) * T.radius, crit ? 0x80e0ff : 0xffffff, crit ? 12 : 6, 3, 0.25);
     this.audio.play('hit');
     if (crit) UI.toast('💠 Critical hit!', 'good');
-    if (e.id.startsWith('d_')) this.onEnemyDamaged(e.id, this.dsim.damage(e.id, dmg, fx, fz, opts), true, skill);
+    if (this.coopGuest) { this.net.send({ t: 'attack', id: e.id, dmg, kind: skill, bomb: opts.bomb ? 1 : 0, mouth: opts.mouth ? 1 : 0 }); this.pendingSkill = skill; } // co-op guest: the host decides
+    else if (e.id.startsWith('d_')) this.onEnemyDamaged(e.id, this.dsim.damage(e.id, dmg, fx, fz, opts), true, skill);
     else if (e.id.startsWith('m_')) this.onEnemyDamaged(e.id, this.msim.damage(e.id, dmg, fx, fz, opts), true, skill);
     else if (this.online) { this.net.send({ t: 'attack', id: e.id, dmg, kind: skill }); this.pendingSkill = skill; }
     else this.onEnemyDamaged(e.id, this.localSim.damage(e.id, dmg, fx, fz, opts), true, skill);
     this.lastAttackHit = { id: e.id, t: this.t };
   }
-  onEnemyDamaged(id, r, mine, skill = this.pendingSkill || 'combat') {
+  onEnemyDamaged(id, r, mine, skill = this.pendingSkill || 'combat', by = null) {
     if (!r || r.ok === false) return;
     const e = this.enemyById(id), v = this.views.get(id);
+    if (this.coop?.isHost) this.coop.hostEnemyResult(id, r, by || this.coop.me, e);
     if (r.flipped) { if (v) v.flash(0xffd040); UI.toast('The Shellback flips onto its back — strike its belly!', 'good'); return; }
     if (r.stunned) { this.shake = 0.6; this.audio.play('boom'); UI.toast('Magmaw chokes on the bomb! Its molten heart is exposed — STRIKE!', 'good'); if (v) v.flash(0xffd040); return; }
     if (r.blocked) {
@@ -618,9 +720,9 @@ export class Game {
       if (e) this.particles.burst(e.x, this.terrainH(e.x, e.z) + 0.8, e.z, 0x9a8aff, 22, 4, 0.8);
       this.audio.play('kill');
       if (this.p.lock && this.p.lock.id === id) this.p.lock = null;
-      if (mine) { this.addXp(skill === 'archery' || skill === 'magic' ? skill : 'combat', r.xp || ENEMY_TYPES[type].xp); if (e) this.rollLoot(type, e.x, e.z); }
-      if (id === 'd_warden') { this.s.flags.boss = true; this.dungeon.setState(this.dstate()); UI.banner('Barrow Warden defeated!', 'A chest appears…'); this.save(); }
-      if (id === 'm_magmaw') { this.s.flags.q3_boss = true; this.mine.setState(this.s.flags); this.shake = 1; UI.banner('Magmaw defeated!', 'The lava cools… a chest rises from the crucible'); this.save(); }
+      if (mine) { this.addXp(skill === 'archery' || skill === 'magic' ? skill : 'combat', this.coopGuest ? ENEMY_TYPES[type].xp : r.xp || ENEMY_TYPES[type].xp); if (e) this.rollLoot(type, e.x, e.z); } // loot is personal: rolled and dropped only on this player's screen
+      if (id === 'd_warden' && (mine || !this.coopGuest)) { this.s.flags.boss = true; this.dungeon.setState(this.dstate()); UI.banner('Barrow Warden defeated!', 'A chest appears…'); this.save(); }
+      if (id === 'm_magmaw' && (mine || !this.coopGuest)) { this.s.flags.q3_boss = true; this.mine.setState(this.mineFlags()); this.shake = 1; UI.banner('Magmaw defeated!', 'The lava cools… a chest rises from the crucible'); this.save(); }
     }
   }
   // ---------------- interactions ----------------
@@ -628,6 +730,7 @@ export class Game {
     const p = this.p, near = [], f = this.s.flags;
     const add = (d, max, o) => { if (d < max) near.push({ d, ...o }); };
     const dist = (o) => Math.hypot(o.x - p.x, o.z - p.z);
+    if (this.coop?.active) for (const r of this.remotes.values()) if (r.dead && r.av.root.visible) add(dist(r) - 1, 1.6, { kind: 'revive', r, label: `Hold to revive ${UI.esc(r.name)}` });
     if (!this.inDungeon) {
       for (const n of this.npcs) add(dist(n), 2.8, { kind: 'npc', label: `Talk to ${n.name}`, npc: n });
       for (const s of this.world.stations) add(dist(s), 2.6, { kind: 'station', label: s.label, station: s.kind, st: s });
@@ -667,6 +770,13 @@ export class Game {
   }
   interact(it) {
     const D = this.dungeon, f = this.s.flags;
+    if (it.kind === 'revive') return this.coop?.startRevive(it.r.id);
+    if (this.coopGuest) { // in a friend's world: puzzles and the host's furniture are the host's
+      const fw = { lever: 'lever', mswitch: 'mswitch', mcart: 'mcart' }[it.kind];
+      if (fw) { this.net.send({ t: 'act', k: fw }); this.audio.play('ui'); return; }
+      if (it.kind === 'piece' && it.b.type === 'door') { this.net.send({ t: 'act', k: 'door', key: it.b.k, i: it.b.i }); this.audio.play('door'); return; }
+      if (it.kind === 'piece' && (it.b.type === 'hearth' || it.b.type === 'chest')) return UI.toast('That belongs to the host of this world.', '');
+    }
     switch (it.kind) {
       case 'npc': it.npc.av.root.rotation.y = Math.atan2(this.p.x - it.npc.x, this.p.z - it.npc.z); return this.talk(it.npc);
       case 'station': this.currentStation = it.st; return this.openPanel(it.station);
@@ -740,7 +850,7 @@ export class Game {
   enterDungeon() {
     this.fade(() => {
       this.debug.teleport(DUNGEON_START.x, DUNGEON_START.z, 0); this.p.ry = Math.PI; this.cam.yaw = 0;
-      this.s.flags.entered = true; this.resetDungeonSim(); this.p.lock = null;
+      this.s.flags.entered = true; if (this.canResetDungeon('barrow')) this.resetDungeonSim(); this.p.lock = null;
       if (this.buildMode) this.toggleBuild();
       UI.banner('The Hollow Barrow'); this.save();
     });
@@ -749,7 +859,7 @@ export class Game {
     this.fade(() => {
       this.debug.teleport(MINE_START.x, MINE_START.z, 0); this.p.ry = Math.PI; this.cam.yaw = 0;
       if (this.s.flags.q3_start) this.s.flags.q3_enter = true;
-      this.resetMineSim(); this.mine.setState(this.s.flags); this.p.lock = null;
+      if (this.canResetDungeon('mine')) this.resetMineSim(); this.mine.setState(this.mineFlags()); this.p.lock = null;
       if (this.buildMode) this.toggleBuild();
       UI.banner('Cinderdeep Mine', 'The air shimmers with heat'); this.save();
     });
@@ -762,6 +872,7 @@ export class Game {
   // ---------------- building (v2: aim where you look, rotate, home plots) ----------------
   toggleBuild() {
     if (!this.buildMode && this.inDungeon) return UI.toast('The rock resists your building.', 'bad');
+    if (!this.buildMode && this.coopGuest && !(this.coop.allowBuild && this.coop.hostPlot)) return UI.toast("Building is off in a friend's world. The host can let you build on their home plot (Co-op ▸ Allow building).", 'bad');
     this.buildMode = !this.buildMode; this.input.buildMode = this.buildMode;
     this.building.ghost.visible = this.buildMode; UI.show('#tbuild', this.buildMode && this.touch);
     this.refreshBuildBar(); this.drawPlot();
@@ -790,6 +901,7 @@ export class Game {
     this.refreshBuildBar();
   }
   removePiece() {
+    if (this.coopGuest) return UI.toast('Only the host can remove pieces in their world.', 'bad');
     const { gx, gz, k } = this.buildTarget();
     const stack = this.building.stacks.get(k);
     if (!stack || !stack.length) return UI.toast('Nothing to remove there.', 'bad');
@@ -997,7 +1109,7 @@ export class Game {
         if (p.mt > 0.35) p.mode = 'normal';
         break;
       case 'dead':
-        if (p.mt > 2.2 && !this.respawning) { this.respawning = true; this.respawn(); setTimeout(() => (this.respawning = false), 600); }
+        if (p.mt > (this.downedT && this.coop?.active ? this.downedT : 2.2) && !this.respawning) { this.downedT = 0; this.respawning = true; this.respawn(); setTimeout(() => (this.respawning = false), 600); }
         break;
       case 'grapple': {
         const g = p.gr;
@@ -1160,6 +1272,8 @@ export class Game {
       else { const it = this.findInteract(); if (it) pr = `<kbd>${this.touch ? '✋' : 'E'}</kbd>${it.label}`; this.currentInteract = it; }
     }
     if (p.mode === 'gather') { const d = NODE_TYPES[p.gnode.type]; pr = `<kbd>…</kbd>${d.skill === 'woodcutting' ? 'Chopping' : d.fish ? 'Fishing' : 'Mining'}…`; }
+    if (this.coop?.reviving) pr = `<kbd>${this.touch ? '✋' : 'E'}</kbd>Reviving… ${Math.round((this.reviveProgress || 0) * 100)}%`;
+    else if (p.mode === 'dead' && this.downedT && this.coop?.active) pr = `<kbd>💀</kbd>Downed · a friend can revive you · Hearthstone in ${Math.max(0, Math.ceil(this.downedT - p.mt))} s`;
     UI.prompt(pr);
     if (this.nameTag) { this.nameTag.position.set(p.x, p.y + 2.55, p.z); this.nameTag.visible = !this.touch || true; }
     if (this.buildMode) {
@@ -1170,12 +1284,24 @@ export class Game {
     }
   }
   updateRemotes(dt) {
-    const k = 1 - Math.exp(-dt * 12);
+    const k = 1 - Math.exp(-dt * 12), now = performance.now(), myZ = zoneKey(this.p.x, this.p.z);
     for (const r of this.remotes.values()) {
-      r.x += (r.tx - r.x) * k; r.y += (r.ty - r.y) * k; r.z += (r.tz - r.z) * k; r.ry = lerpAngle(r.ry, r.tr, k); r.at += dt;
-      const sp = Math.hypot(r.tx - r.x, r.tz - r.z) * 8;
+      const px = r.x, pz = r.z;
+      if (r.buf && r.buf.length) {
+        // snapshot interpolation: render ~1.6 snapshot intervals in the past (about 130 ms direct, 400 ms via relay)
+        const b = r.buf, rt = now - Math.max(90, Math.min(650, (r.iv || 83) * 1.6));
+        let i = b.length - 1; while (i > 0 && b[i - 1].t > rt) i--;
+        const A = b[Math.max(0, i - 1)], B = b[i];
+        if (rt >= b[b.length - 1].t) { const L = b[b.length - 1]; r.x += (L.x - r.x) * k; r.y += (L.y - r.y) * k; r.z += (L.z - r.z) * k; r.ry = lerpAngle(r.ry, L.ry, k); }
+        else { const f = B.t > A.t ? Math.max(0, Math.min(1, (rt - A.t) / (B.t - A.t))) : 1; r.x = A.x + (B.x - A.x) * f; r.y = A.y + (B.y - A.y) * f; r.z = A.z + (B.z - A.z) * f; r.ry = lerpAngle(A.ry, B.ry, f); }
+        while (b.length > 2 && b[1].t < rt - 200) b.shift();
+      } else { r.x += (r.tx - r.x) * k; r.y += (r.ty - r.y) * k; r.z += (r.tz - r.z) * k; r.ry = lerpAngle(r.ry, r.tr, k); }
+      r.at += dt;
+      const sp = r.buf ? Math.hypot(r.x - px, r.z - pz) / Math.max(dt, 1e-3) : Math.hypot(r.tx - r.x, r.tz - r.z) * 8;
       r.av.root.position.set(r.x, r.y, r.z); r.av.root.rotation.y = r.ry;
-      const a = r.a;
+      const vis = !this.coop?.active || zoneKey(r.x, r.z) === myZ; r.av.root.visible = vis; r.label.visible = vis;
+      if (r.emote) { r.emote.t -= dt; if (r.emote.t <= 0) r.emote = null; }
+      const a = r.emote && !r.dead && (r.a === 'idle' || r.a === 'walk') ? r.emote.name : r.a;
       animateAvatar(r.av, { anim: a, t: r.at, speed: a === 'run' ? 1.5 : a === 'walk' ? Math.max(0.6, Math.min(1, sp / 5)) : 0, tool: a === 'gather' ? 'axe' : null }, dt);
       r.label.position.set(r.x, r.y + 2.5, r.z);
     }
@@ -1208,7 +1334,7 @@ export class Game {
   }
   frame(dt) {
     if (this.phase === 'play') {
-      this.updatePlayer(dt); this.updateEnemies(dt); this.updateRemotes(dt); this.updateNodes(); this.sendState(dt);
+      this.updatePlayer(dt); this.updateEnemies(dt); this.updateRemotes(dt); this.updateNodes(); this.sendState(dt); this.coop?.update(dt);
       this.updateBombs(dt); this.updateFlashes(dt); this.updateProjs(dt); this.updateHazards(dt); this.updateTraps(dt); this.updateLoot(dt); this.updatePets(dt);
       this.updateHUD();
     } else {
@@ -1234,7 +1360,7 @@ export class Game {
     this.world.updateWater(this.t); this.dungeon.update(this.t, dt); this.particles.update(dt); this.building.update(this.t, dt);
     const did = this.phase === 'play' ? this.dungeonId : null;
     this.mine.group.visible = did === 'mine'; this.dungeon.group.visible = did !== 'mine';
-    if (did === 'mine') for (const ev of this.mine.update(this.t, dt)) this.onMineEvent(ev);
+    if (did === 'mine' || (this.coop?.isHost && this.coop.joinedPeers.some((q) => zoneKey(q.x, q.z) === 'mine'))) for (const ev of this.mine.update(this.t, dt)) this.onMineEvent(ev);
     const focus = new THREE.Vector3(this.p.x, this.p.y, this.p.z);
     this.ridge.update(this.t, dt, focus, this.zoneName());
     const tod = this.todOverride ?? ((Date.now() / 1000 / 600 + 0.12) % 1);

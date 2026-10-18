@@ -156,7 +156,8 @@ export function settingsHtml(st, cloudBox = '') {
   <label class="set chk"><input type="checkbox" data-set="invertY" ${st.invertY ? 'checked' : ''}> Invert camera Y</label>
   <p class="sub">Settings save on this device. Quality changes to antialiasing apply after a reload.</p>
   <h3>☁ Cloud save</h3><div class="cloud-slot">${cloudBox}</div>
-  <div class="cloud-actions"><button data-cloud="save">💾 Save now</button></div>`;
+  <div class="cloud-actions"><button data-cloud="save">💾 Save now</button></div>
+  <h3>👥 Co-op</h3><div class="cloud-actions"><button data-coop-open>👥 Co-op: host or join a friend</button></div>`;
 }
 export const HELP_HTML = `<h2>How to play</h2>
 <div class="help"><div><h3>PC</h3><ul>
@@ -164,7 +165,7 @@ export const HELP_HTML = `<h2>How to play</h2>
 <li><b>Left click / J</b> sword combo · <b>hold</b> then release = spin attack · <b>Right click / Tab</b> lock-on</li>
 <li><b>Q</b> (hold) shield · <b>Space</b> dodge roll · <b>E</b> talk / gather / use · <b>G</b> grapple</li>
 <li><b>R</b> throw bomb · <b>V</b> shoot bow · <b>T</b> cast spell · <b>Z</b> eat quick-slot food</li>
-<li><b>B</b> build (R rotate, P claim plot) · <b>C</b> skills · <b>I</b> inventory · <b>L</b> journal · <b>K</b> spellbook · <b>O</b> settings · <b>H</b> help</li></ul></div>
+<li><b>B</b> build (R rotate, P claim plot) · <b>C</b> skills · <b>I</b> inventory · <b>L</b> journal · <b>K</b> spellbook · <b>O</b> settings · <b>H</b> help</li><li><b>Co-op</b>: title screen or Settings ▸ 👥 Co-op · hold <b>E</b> by a downed friend to revive · chat <b>/wave /cheer /thumbs /help /laugh</b></li></ul></div>
 <div><h3>Phone</h3><ul><li>Left stick to move, drag anywhere else to look.</li><li>⚔ attack (hold to spin) · 🛡 shield · ⤾ roll · 🎯 lock-on · ✋ context action · 💣 bomb · 🏹 bow · ✨ spell · 🍖 quick item</li></ul>
 <h3>Tips</h3><ul><li>Enemies flash red before attacking — block or roll!</li><li>The grey Fade hurts over time. Stand near a lit Hearthstone to recover.</li><li>Cracked walls hide secrets. Bombs!</li><li>Your inventory holds 30 slots; bank the rest in the village.</li></ul></div></div>`;
 export function dialog(name, text, onNext, cls = '', choices = null) {

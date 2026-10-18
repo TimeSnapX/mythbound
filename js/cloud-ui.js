@@ -1,7 +1,7 @@
 // Cloud saves glue: picks an adapter, wires CloudSync to the game, renders the sign-in box (title screen + Settings) and the
 // "which save do you want to keep?" chooser. All cloud logic lives in cloud.js; Firebase specifics in cloud-firebase.js.
 import { CloudSync } from './cloud.js';
-import { firebaseConfig, CLOUD_SAVES_CONFIGURED, AUTH_FLOW } from './firebase-config.js';
+import { AUTH_FLOW, effectiveConfig, cloudConfigured } from './firebase-config.js';
 import * as UI from './ui.js';
 
 const esc = UI.esc;
@@ -14,9 +14,9 @@ export async function pickAdapter(params) {
   if (params.get('cloud') === 'off') return null;
   if (debug && window.MB_CLOUD_ADAPTER) return typeof window.MB_CLOUD_ADAPTER === 'function' ? await window.MB_CLOUD_ADAPTER() : window.MB_CLOUD_ADAPTER;
   if (debug && params.get('cloud') === 'mock') { const { MockCloudAdapter } = await import('./cloud-mock.js'); return new MockCloudAdapter(); }
-  if (!CLOUD_SAVES_CONFIGURED) return null;
+  if (!cloudConfigured(params)) return null;
   const { createFirebaseAdapter } = await import('./cloud-firebase.js');
-  return createFirebaseAdapter(firebaseConfig, { flow: AUTH_FLOW });
+  return createFirebaseAdapter(effectiveConfig(params), { flow: AUTH_FLOW });
 }
 
 export function boxHtml(st, adapter) {
@@ -74,7 +74,7 @@ export function initCloud(game, params = new URLSearchParams(location.search)) {
   const bye = () => { if (game.phase === 'play') game.save(); sync.flush(); };
   addEventListener('pagehide', bye);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') bye(); });
-  const maybe = params.get('cloud') !== 'off' && (CLOUD_SAVES_CONFIGURED || (params.has('debug') && (!!window.MB_CLOUD_ADAPTER || params.get('cloud') === 'mock')));
+  const maybe = params.get('cloud') !== 'off' && (cloudConfigured(params) || (params.has('debug') && (!!window.MB_CLOUD_ADAPTER || params.get('cloud') === 'mock')));
   sync.state.status = maybe ? 'loading' : 'disabled';
   render(sync.state);
   (async () => {

@@ -179,6 +179,7 @@ export function animateAvatar(A, s, dt) {
     case 'throw': { const p = Math.min(1, t / 0.3); tgt.rAx = lerp(-2.8, -0.6, ease(p)); tgt.torsoX = lerp(-0.2, 0.2, p); break; }
     case 'eat': tgt.rAx = -2.2; tgt.rAy = -0.6; tgt.headX = 0.2; break;
     case 'talk': { tgt.rAx = -0.7 + Math.sin(A.t * 5) * 0.35; tgt.rAz = 0.3; tgt.lAx = -0.3 + Math.sin(A.t * 3.7) * 0.2; tgt.headX = Math.sin(A.t * 4) * 0.08; tgt.torsoY = Math.sin(A.t * 1.5) * 0.12; break; }
+    case 'cheer': { tgt.rAx = -2.9; tgt.lAx = -2.9; tgt.rAz = 0.35 + Math.sin(A.t * 8) * 0.2; tgt.lAz = -0.35 - Math.sin(A.t * 8) * 0.2; tgt.headX = -0.15; break; }
     case 'wave': { tgt.rAx = -2.9; tgt.rAz = 0.4 + Math.sin(A.t * 9) * 0.4; break; }
     case 'idle2': { tgt.headX = Math.sin(A.t * 0.7) * 0.12; tgt.torsoY = Math.sin(A.t * 0.4) * 0.25; tgt.lAx = Math.sin(A.t * 0.9) * 0.08; tgt.rAx = -0.15; break; }
   }

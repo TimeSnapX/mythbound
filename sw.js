@@ -6,9 +6,11 @@
  *   intercepted or cached. Game saves live in localStorage, not here. WebSockets are never touched.
  * - Cloud saves (v2.1): Google sign-in and Firestore traffic (googleapis.com, gstatic.com, firebaseapp.com, google.com,
  *   googleusercontent.com, firebaseio.com) is explicitly network-only: never intercepted, never cached.
+ * - Co-op (v2.2): Firestore signaling and the Realtime Database relay (firebaseio.com, firebasedatabase.app) are
+ *   network-only too. WebRTC data channels and STUN never pass through a service worker.
  * Bump VERSION to drop old caches.
  */
-const VERSION = "v2.1.0";
+const VERSION = "v2.2.0";
 const CACHE = `mythbound-${VERSION}`;
 const SCOPE = new URL(self.registration.scope);
 const PRECACHE = [
@@ -18,11 +20,12 @@ const PRECACHE = [
   "js/enemies.js", "js/building.js", "js/input.js", "js/net.js", "js/ui.js",
   "js/ridge.js", "js/mine.js", "js/audio.js", "js/pets.js", "js/rpg.js", "js/story.js", "js/systems.js", "js/install.js", "assets/logo.webp",
   "js/cloud.js", "js/cloud-ui.js", "js/firebase-config.js",
+  "js/coop.js", "js/coop-net.js", "js/coop-ui.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-192.png", "icons/icon-maskable-512.png", "icons/apple-touch-icon.png"
 ];
 const NEVER = ["sw.js"];
 // Auth / Firestore hosts: always straight to the network (popup + redirect sign-in, token refresh, Firestore channels).
-const NETWORK_ONLY = /(^|\.)(googleapis\.com|gstatic\.com|firebaseapp\.com|firebaseio\.com|web\.app|google\.com|googleusercontent\.com)$/i;
+const NETWORK_ONLY = /(^|\.)(googleapis\.com|gstatic\.com|firebaseapp\.com|firebaseio\.com|firebasedatabase\.app|firebasestorage\.app|web\.app|google\.com|googleusercontent\.com)$/i;
 
 function handled(req) {
   const u = new URL(req.url);
