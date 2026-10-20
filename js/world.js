@@ -308,6 +308,19 @@ export function buildWorld(scene, { shadows = true } = {}) {
     if (fleckColor[t]) for (let i = 0; i < 5; i++) parts.push({ geo: new THREE.BoxGeometry(0.26, 0.26, 0.26), color: fleckColor[t], pos: [Math.cos(i * 1.3) * 0.75, 0.5 + (i % 3) * 0.2, Math.sin(i * 1.3) * 0.7], rot: [i, i * 2, 0] });
     NODE_GEO[t] = [coloredGeometry(parts), coloredGeometry([{ geo: new THREE.DodecahedronGeometry(1, 0), color: 0x6a6a6c, pos: [0, 0.15, 0], scale: [0.8, 0.25, 0.8] }])];
   }
+  // ---- v3 node looks ----
+  const treeOf = (trunk, leaf, leaf2, h = 1) => coloredGeometry([{ geo: new THREE.CylinderGeometry(0.2, 0.3, 1.6 * h, 5), color: trunk, pos: [0, 0.8 * h, 0] }, { geo: new THREE.ConeGeometry(1.3, 2.6, 6), color: leaf, pos: [0, 2.4 * h, 0] }, { geo: new THREE.ConeGeometry(0.95, 2.0, 6), color: leaf2, pos: [0, 3.5 * h, 0] }]);
+  const stump = (c) => coloredGeometry([{ geo: new THREE.CylinderGeometry(0.3, 0.36, 0.4, 5), color: c, pos: [0, 0.2, 0] }]);
+  NODE_GEO.pine = [treeOf(0x5a4030, 0x2f5a4a, 0xe8f0f4, 1.1), stump(0x5a4030)];
+  NODE_GEO.palm = [coloredGeometry([{ geo: new THREE.CylinderGeometry(0.16, 0.26, 3.6, 5), color: 0x9a7a4a, pos: [0, 1.8, 0], rot: [0, 0, 0.12] }, ...[0, 1.25, 2.5, 3.75, 5].map((a) => ({ geo: new THREE.BoxGeometry(0.35, 0.06, 1.8), color: 0x3f9a3a, pos: [Math.sin(a) * 0.8 + 0.2, 3.5, Math.cos(a) * 0.8], rot: [0.35, a, 0] }))]), stump(0x9a7a4a)];
+  NODE_GEO.mangrove = [coloredGeometry([{ geo: new THREE.CylinderGeometry(0.25, 0.35, 2.4, 5), color: 0x4a3a2a, pos: [0, 1.4, 0] }, ...[0, 2.1, 4.2].map((a) => ({ geo: new THREE.CylinderGeometry(0.06, 0.08, 1.2, 4), color: 0x4a3a2a, pos: [Math.sin(a) * 0.4, 0.4, Math.cos(a) * 0.4], rot: [Math.cos(a) * 0.5, 0, -Math.sin(a) * 0.5] })), { geo: new THREE.IcosahedronGeometry(1.5, 0), color: 0x3a5a2a, pos: [0, 3.2, 0], scale: [1.3, 0.7, 1.3] }]), stump(0x4a3a2a)];
+  const herbGeo = (c, f) => coloredGeometry([{ geo: new THREE.IcosahedronGeometry(0.45, 0), color: c, pos: [0, 0.3, 0], scale: [1, 0.7, 1] }, { geo: new THREE.BoxGeometry(0.14, 0.14, 0.14), color: f, pos: [0.2, 0.6, 0.1] }, { geo: new THREE.BoxGeometry(0.12, 0.12, 0.12), color: f, pos: [-0.2, 0.55, -0.1] }]);
+  const picked = coloredGeometry([{ geo: new THREE.IcosahedronGeometry(0.3, 0), color: 0x5a6a3a, pos: [0, 0.1, 0], scale: [1, 0.4, 1] }]);
+  NODE_GEO.wildherb = [herbGeo(0x3a8a3a, 0xa0ff80), picked]; NODE_GEO.desertherb = [herbGeo(0x9a9a3a, 0xffe040), picked]; NODE_GEO.bogherb = [herbGeo(0x3a4a2a, 0xd02040), picked]; NODE_GEO.snowherb = [herbGeo(0x6a9aaa, 0xe0f8ff), picked];
+  NODE_GEO.cactus = [coloredGeometry([{ geo: new THREE.CylinderGeometry(0.35, 0.4, 2.4, 6), color: 0x4a8a3a, pos: [0, 1.2, 0] }, { geo: new THREE.CylinderGeometry(0.2, 0.22, 1, 6), color: 0x4a8a3a, pos: [0.55, 1.4, 0], rot: [0, 0, 0.0] }, { geo: new THREE.BoxGeometry(0.4, 0.2, 0.2), color: 0x4a8a3a, pos: [0.35, 0.95, 0] }, { geo: new THREE.BoxGeometry(0.15, 0.15, 0.15), color: 0xff70a0, pos: [0, 2.45, 0] }]), coloredGeometry([{ geo: new THREE.CylinderGeometry(0.35, 0.4, 0.8, 6), color: 0x5a7a3a, pos: [0, 0.4, 0] }])];
+  for (const t of ['icefish', 'nightfish', 'rainfish', 'deepsea']) NODE_GEO[t] = [fishGeo, noGeo];
+  Object.assign(fleckColor, { mithril: 0x5a7aff, adamant: 0x2aa060 });
+  for (const t of ['mithril', 'adamant']) { const parts = [{ geo: new THREE.DodecahedronGeometry(1, 0), color: 0x6a6a70, pos: [0, 0.55, 0], scale: [1.1, 0.8, 1] }]; for (let i = 0; i < 6; i++) parts.push({ geo: new THREE.OctahedronGeometry(0.22, 0), color: fleckColor[t], pos: [Math.cos(i * 1.1) * 0.75, 0.5 + (i % 3) * 0.2, Math.sin(i * 1.1) * 0.7] }); NODE_GEO[t] = [coloredGeometry(parts), coloredGeometry([{ geo: new THREE.DodecahedronGeometry(1, 0), color: 0x5a5a5c, pos: [0, 0.15, 0], scale: [0.8, 0.25, 0.8] }])]; }
   const all = generateNodes(), byType = {};
   for (const n of all) (byType[n.type] ||= []).push(n);
   const dummy = new THREE.Object3D(), ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
@@ -319,8 +332,8 @@ export function buildWorld(scene, { shadows = true } = {}) {
       const fish = !!NODE_TYPES[type].fish;
       dummy.position.set(n.x, fish ? -0.1 : H(n.x, n.z), n.z); dummy.rotation.set(0, n.r, 0); dummy.scale.setScalar(s); dummy.updateMatrix();
       live.setMatrixAt(i, dummy.matrix); dep.setMatrixAt(i, ZERO);
-      const isTree = type === 'tree' || type === 'oak' || type === 'ashtree';
-      if (!fish && !NODE_TYPES[type].trap) colliders.push({ c: 1, x: n.x, z: n.z, r: isTree ? 0.55 : 0.95, node: n.id, ...(isTree ? { cam: 1.1, top: 5.5 } : {}) });
+      const isTree = ['tree', 'oak', 'ashtree', 'pine', 'palm', 'mangrove'].includes(type);
+      if (!fish && !NODE_TYPES[type].trap && !NODE_TYPES[type].herb) colliders.push({ c: 1, x: n.x, z: n.z, r: isTree ? 0.55 : 0.95, node: n.id, ...(isTree ? { cam: 1.1, top: 5.5 } : {}) });
       W.nodes.set(n.id, { ...n, def: NODE_TYPES[n.type], live, dep, idx: i, matrix: dummy.matrix.clone(), depleted: false, until: 0, obj: { position: dummy.position.clone(), rotation: { z: 0 } } });
     });
     live.computeBoundingSphere(); dep.computeBoundingSphere();

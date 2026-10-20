@@ -8,6 +8,14 @@ const SCALES = {
   barrow: { root: 50, steps: [0, 3, 5, 7, 10], tempo: 0.7, wave: 'sine', pad: [38, 45, 50], bright: 0.4 },
   mine: { root: 45, steps: [0, 1, 3, 5, 7, 8], tempo: 0.45, wave: 'square', pad: [33, 40, 45], bright: 0.35, drum: 1 },
   boss: { root: 45, steps: [0, 1, 3, 6, 7], tempo: 0.22, wave: 'sawtooth', pad: [33, 39, 45], bright: 0.6, drum: 2 },
+  // v3
+  belfry: { root: 50, steps: [0, 2, 3, 7, 8, 10], tempo: 0.8, wave: 'sine', pad: [38, 45, 50], bright: 0.45, box: 1 },
+  arena: { root: 52, steps: [0, 3, 5, 7, 10, 12], tempo: 0.24, wave: 'square', pad: [40, 47, 52], bright: 0.7, drum: 2 },
+  night: { root: 57, steps: [0, 3, 7, 10, 14], tempo: 0.75, wave: 'sine', pad: [45, 52], bright: 0.35 },
+  frost: { root: 64, steps: [0, 2, 7, 9, 14], tempo: 0.62, wave: 'sine', pad: [52, 59, 64], bright: 0.9, box: 1 },
+  desert: { root: 57, steps: [0, 1, 4, 5, 7, 8, 10], tempo: 0.4, wave: 'triangle', pad: [45, 52], bright: 0.7, drum: 1 },
+  swamp: { root: 48, steps: [0, 3, 5, 6, 10], tempo: 0.66, wave: 'triangle', pad: [36, 43], bright: 0.4 },
+  coast: { root: 62, steps: [0, 2, 4, 7, 9, 11], tempo: 0.45, wave: 'triangle', pad: [50, 57, 62], bright: 0.95 },
   vael: { root: 72, steps: [0, 3, 7, 10, 14, 12, 7, 5], tempo: 0.6, wave: 'sine', pad: null, bright: 1, box: 1 }, // Vael's music-box leitmotif, no accompaniment
 };
 export class Audio {
@@ -95,6 +103,13 @@ export class Audio {
       case 'level': [0, 4, 7, 12, 7, 12].forEach((n, i) => this.tone(NOTE(64 + n + (opt.pitch || 0)), 0.22, { type: 'square', vol: 0.08, delay: i * 0.1 })); break;
       case 'cape': [0, 4, 7, 12, 16, 19, 24].forEach((n, i) => this.tone(NOTE(60 + n), 0.4, { type: 'triangle', vol: 0.12, delay: i * 0.12 })); break;
       case 'trap': this.tone(300, 0.08, { type: 'square', vol: 0.1 }); this.tone(200, 0.1, { type: 'square', vol: 0.1, delay: 0.08 }); break;
+      case 'bell': [0, 7, 12].forEach((n, i) => this.tone(NOTE(55 + n), 1.6, { type: 'sine', vol: 0.14 - i * 0.03, delay: i * 0.02 })); this.tone(NOTE(79), 0.6, { type: 'triangle', vol: 0.05 }); break;
+      case 'duel': [0, 5, 7, 12].forEach((n, i) => this.tone(NOTE(60 + n), 0.18, { type: 'square', vol: 0.09, delay: i * 0.12 })); break;
+      case 'skull': this.tone(150, 0.5, { type: 'sawtooth', vol: 0.12, slide: -60 }); this.tone(NOTE(61), 0.4, { type: 'sine', vol: 0.08, delay: 0.1 }); break;
+      case 'achieve': [0, 4, 7, 11, 14].forEach((n, i) => this.tone(NOTE(72 + n), 0.3, { type: 'triangle', vol: 0.1, delay: i * 0.07 })); break;
+      case 'count': this.tone(880, 0.12, { type: 'square', vol: 0.09 }); break;
+      case 'go': this.tone(1320, 0.3, { type: 'square', vol: 0.1 }); break;
+      case 'splash2': this.noise(0.6, { vol: 0.25, freq: 500, q: 0.5, slide: -300 }); break;
       case 'pet': this.tone(1200, 0.08, { type: 'sine', vol: 0.1, slide: 300 }); this.tone(1500, 0.1, { type: 'sine', vol: 0.08, delay: 0.1, slide: -200 }); break;
       default: this.tone(600, 0.05, { vol: 0.05 });
     }

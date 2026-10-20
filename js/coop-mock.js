@@ -22,8 +22,49 @@ class Hub {
     return () => { this.subs.delete(sid); this.ready.then(() => this.ws.readyState === 1 && this.ws.send(JSON.stringify({ op: 'unsub', sid }))).catch(() => {}); };
   }
 }
+// "bridge" hub (?coop=mock&coophub=bridge): the same in-memory database, but shared between tabs of ONE browser
+// through a BroadcastChannel instead of a ws:// test server, so the mock also works on an https:// page (where a
+// plain ws:// socket would be blocked as mixed content). Every tab keeps a replica; writes are broadcast in order.
+class BridgeHub {
+  constructor(name = 'mythbound-coop-bridge') {
+    this.store = new Map(); this.subs = new Map(); this.sid = 0; this.tab = Math.random().toString(36).slice(2, 8); this.n = 0;
+    this.ch = new BroadcastChannel(name);
+    this.ch.onmessage = (e) => { const m = e.data; if (m.k === 'op') this.apply(m.o); else if (m.k === 'sync?') this.ch.postMessage({ k: 'sync', to: m.from, entries: [...this.store] }); else if (m.k === 'sync' && m.to === this.tab && !this.synced) { for (const [k, v] of m.entries) if (!this.store.has(k)) this.store.set(k, v); this.synced = true; } };
+    this.ready = new Promise((res) => { this.ch.postMessage({ k: 'sync?', from: this.tab }); setTimeout(() => { this.synced = true; res(); }, 150); });
+  }
+  parent(p) { return p.slice(0, p.lastIndexOf('/')); }
+  children(p) { return [...this.store.entries()].filter(([k]) => this.parent(k) === p).map(([k, val]) => ({ id: k.slice(p.length + 1), val })); }
+  notify(path, added) {
+    for (const s of this.subs.values()) {
+      if (s.mode === 'doc' && s.path === path) s.cb({ val: this.store.get(path) ?? null });
+      if (s.mode === 'col' && this.parent(path) === s.path) s.cb({ list: this.children(s.path) });
+      if (s.mode === 'added' && added && this.parent(path) === s.path && this.store.has(path)) s.cb({ id: path.slice(s.path.length + 1), val: this.store.get(path) });
+    }
+  }
+  apply(o) {
+    const isNew = !this.store.has(o.path);
+    if (o.op === 'set') { this.store.set(o.path, o.val); this.notify(o.path, isNew); }
+    else if (o.op === 'merge') { this.store.set(o.path, { ...(this.store.get(o.path) || {}), ...o.val }); this.notify(o.path, isNew); }
+    else if (o.op === 'del') { const gone = [...this.store.keys()].filter((k) => k === o.path || k.startsWith(o.path + '/')); for (const k of gone) this.store.delete(k); for (const k of gone) this.notify(k, false); }
+  }
+  write(o) { this.apply(o); this.ch.postMessage({ k: 'op', o }); }
+  async req(o) {
+    await this.ready;
+    switch (o.op) {
+      case 'get': return { val: this.store.get(o.path) ?? null };
+      case 'set': case 'merge': case 'del': this.write(o); return {};
+      case 'add': { const id = 'k' + Date.now().toString(36) + this.tab + (this.n++).toString(36); this.write({ op: 'set', path: o.path + '/' + id, val: o.val }); return { id }; }
+    }
+    return {};
+  }
+  sub(path, mode, cb) {
+    const sid = ++this.sid; this.subs.set(sid, { path, mode, cb: (m) => setTimeout(() => this.subs.has(sid) && cb(m), 0) });
+    this.ready.then(() => { const s = this.subs.get(sid); if (!s) return; if (mode === 'doc') s.cb({ val: this.store.get(path) ?? null }); else if (mode === 'col') s.cb({ list: this.children(path) }); else for (const c of this.children(path)) s.cb({ id: c.id, val: c.val }); });
+    return () => this.subs.delete(sid);
+  }
+}
 const hubs = new Map();
-const hubFor = (url) => { if (!hubs.has(url)) hubs.set(url, new Hub(url)); return hubs.get(url); };
+export const hubFor = (url) => { if (!hubs.has(url)) hubs.set(url, url === 'bridge' ? new BridgeHub() : new Hub(url)); return hubs.get(url); };
 
 export function createMockCoopAdapters({ hub: url, blockDirect = false, relay: relayOn = true, latency = 0 } = {}) {
   const H = hubFor(url);

@@ -23,6 +23,11 @@ import { Systems } from './systems.js';
 import { initCloud } from './cloud-ui.js';
 import { initCoop } from './coop-ui.js';
 import { zoneKey, DOWN_TIME, XP_RANGE, PUZZLE_KEYS } from './coop.js';
+import { buildRegions } from './regions.js';
+import { buildBelfry, buildPyramid, BELFRY_SPAWNS, PYRAMID_SPAWNS, BELFRY_CP, belfryHeight, pyramidHeight } from './belfry.js';
+import { BELFRY_START, PYRAMID_START, BELFRY_ENTRANCE } from './shared.js';
+import { installV3 } from './v3.js';
+import { installPvP } from './pvp-session.js';
 
 const SAVE_KEY = 'mythbound_save_v2', SAVE_KEY_V1 = 'mythbound_save_v1', SETTINGS_KEY = 'mythbound_settings';
 const PR = 0.4, STEP = 0.55, GRAV = 25;
@@ -73,6 +78,9 @@ export class Game {
     this.ridge = buildRidge(this.scene, this.world, { shadows: quality === 'high' });
     this.dungeon = buildDungeon(this.scene);
     this.mine = buildMine(this.scene); this.mine.group.visible = false;
+    this.r3 = buildRegions(this.scene, this.world, { shadows: quality === 'high', quality });
+    this.belfry = buildBelfry(this.scene); this.belfry.group.visible = false;
+    this.pyramid = buildPyramid(this.scene); this.pyramid.group.visible = false;
     this.particles = new Particles(this.scene);
     this.building = new Building(this.scene);
     this.audio = new Audio(this.settings);
@@ -85,16 +93,17 @@ export class Game {
     this.todOverride = params.has('tod') ? +params.get('tod') : null;
     this.cam = { yaw: 0, pitch: 0.38, dist: 7.5, pos: new THREE.Vector3(0, 20, 40) };
     this.views = new Map(); this.remotes = new Map(); this.netEnemies = new Map();
-    this.hitSeen = new Map(); this.enemySpawnType = new Map([...generateEnemySpawns(), ...DUNGEON_SPAWNS, ...MINE_SPAWNS].map((s) => [s.id, s.type]));
+    this.hitSeen = new Map(); this.enemySpawnType = new Map([...generateEnemySpawns(), ...DUNGEON_SPAWNS, ...MINE_SPAWNS, ...BELFRY_SPAWNS, ...PYRAMID_SPAWNS].map((s) => [s.id, s.type]));
     this.phase = 'create'; this.buildMode = false; this.piece = 'wood'; this.rot = 0; this.messages = [];
     this.localSim = new EnemySim(generateEnemySpawns());
-    this.msim = new EnemySim([]);
+    this.msim = new EnemySim([]); this.bsim = new EnemySim([]); this.ysim = new EnemySim([]);
     this.player = buildAvatar(); this.scene.add(this.player.root);
     this.p = { x: SPAWN.x, y: 4, z: SPAWN.z, vy: 0, ry: Math.PI, mode: 'normal', mt: 0, combo: 0, queued: false, stam: 100, stamT: 9, hp: 6, inv: 0, lock: null, grounded: true, speed: 0, hitDone: false, kx: 0, kz: 0 };
     this.addFx();
     this.spawnNPCs();
     this.buildSystems();
     this.load();
+    this.v3Init(); this.pvpInit();
     this.resize(); addEventListener('resize', () => this.resize());
     this.bindUI();
     initCloud(this); // cloud saves (Sign in with Google + Firestore); "coming soon" while js/firebase-config.js is a placeholder
@@ -383,7 +392,7 @@ export class Game {
     if (this.sendT < iv && !this.tpFlag) return;
     this.sendT = 0;
     const p = this.p;
-    this.net.send({ t: 'state', x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2), ry: +p.ry.toFixed(2), a: this.animName(), dead: p.mode === 'dead', sword: this.s.sword, tp: this.tpFlag ? 1 : 0, hp: p.hp, mhp: this.maxHp });
+    this.net.send({ t: 'state', x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2), ry: +p.ry.toFixed(2), a: this.animName(), dead: p.mode === 'dead', sword: this.s.sword, tp: this.tpFlag ? 1 : 0, hp: p.hp, mhp: this.maxHp, mo: this.mounted ? 1 : 0 });
     this.tpFlag = false;
   }
 
@@ -478,8 +487,9 @@ export class Game {
   // ---------------- terrain / collision ----------------
   get inDungeon() { return zoneAt(this.p.x, this.p.z) === 'dungeon'; }
   get dungeonId() { return this.inDungeon ? dungeonAt(this.p.x) : null; }
-  get D() { return this.dungeonId === 'mine' ? this.mine : this.dungeon; }
-  terrainH(x, z) { return zoneAt(x, z) === 'dungeon' ? (dungeonAt(x) === 'mine' ? mineHeight(x, z) : dungeonHeight(x, z)) : islandHeight(x, z); }
+  get D() { const d = this.dungeonId; return d === 'mine' ? this.mine : d === 'belfry' ? this.belfry : d === 'pyramid' ? this.pyramid : this.dungeon; }
+  dungeonObj(d) { return d === 'mine' ? this.mine : d === 'belfry' ? this.belfry : d === 'pyramid' ? this.pyramid : this.dungeon; }
+  terrainH(x, z) { if (zoneAt(x, z) !== 'dungeon') return islandHeight(x, z); const d = dungeonAt(x); return d === 'mine' ? mineHeight(x, z) : d === 'belfry' ? belfryHeight(x, z) : d === 'pyramid' ? pyramidHeight(x, z) : dungeonHeight(x, z); }
   groundAt(x, z, feetY) {
     let g = this.terrainH(x, z);
     if (zoneAt(x, z) !== 'dungeon') for (const c of this.building.columnsAround(x, z, PR * 0.6)) if (c.top <= feetY + STEP && c.top > g) g = c.top;
@@ -487,7 +497,7 @@ export class Game {
   }
   collide(nx, nz, moving) {
     const p = this.p; const inD = zoneAt(nx, nz) === 'dungeon';
-    const list = inD ? (dungeonAt(nx) === 'mine' ? this.mine.colliders : this.dungeon.colliders) : this.world.colliders;
+    const list = inD ? this.dungeonObj(dungeonAt(nx)).colliders : this.world.colliders;
     for (let iter = 0; iter < 2; iter++) {
       for (const c of list) {
         if (c.disabled) continue;
@@ -541,17 +551,25 @@ export class Game {
     for (const [id, v] of this.views) if (id.startsWith('m_')) { v.dispose(); this.views.delete(id); }
     this.coop?.applyBossScale();
   }
+  resetV3Sim(which) {
+    const B = which === 'belfry', f = this.s.flags;
+    const spawns = (B ? BELFRY_SPAWNS : PYRAMID_SPAWNS).filter((s) => !(s.id === 'b_keeper' && f.bf_boss) && !(s.id === 'b_vael' && f.bf_vael));
+    const D = B ? this.belfry : this.pyramid, sim = new EnemySim(spawns, { height: B ? belfryHeight : pyramidHeight, blocked: (x, z) => D.blocked?.(x, z) || false, respawn: false });
+    if (B) this.bsim = sim; else this.ysim = sim;
+    const pre = B ? 'b_' : 'y_'; for (const [id, v] of this.views) if (id.startsWith(pre)) { v.dispose(); this.views.delete(id); }
+    this.coop?.applyBossScale();
+  }
   overworldEnemies() { return this.online ? this.netEnemies : this.localSim.enemies; }
-  allEnemies() { const out = []; if (this.coopGuest) { for (const e of this.netEnemies.values()) out.push(e); return out; } for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); for (const e of this.msim.enemies.values()) out.push(e); return out; }
-  enemyById(id) { if (this.coopGuest) return this.netEnemies.get(id); return id.startsWith('d_') ? this.dsim.enemies.get(id) : id.startsWith('m_') ? this.msim.enemies.get(id) : this.overworldEnemies().get(id); }
-  simFor(id) { return id.startsWith('d_') ? this.dsim : id.startsWith('m_') ? this.msim : this.localSim; }
+  allEnemies() { const out = []; if (this.coopGuest) { for (const e of this.netEnemies.values()) out.push(e); return out; } for (const e of this.overworldEnemies().values()) out.push(e); for (const e of this.dsim.enemies.values()) out.push(e); for (const e of this.msim.enemies.values()) out.push(e); for (const e of this.bsim.enemies.values()) out.push(e); for (const e of this.ysim.enemies.values()) out.push(e); return out; }
+  enemyById(id) { if (this.coopGuest) return this.netEnemies.get(id); const s = this.simFor(id); return s === this.localSim ? this.overworldEnemies().get(id) : s.enemies.get(id); }
+  simFor(id) { return id.startsWith('d_') ? this.dsim : id.startsWith('m_') ? this.msim : id.startsWith('b_') ? this.bsim : id.startsWith('y_') ? this.ysim : this.localSim; }
   // co-op host with friends connected: every sim runs for everyone in its zone, events are tagged with their zone
   updateEnemiesHost(dt) {
     const C = this.coop, myZ = zoneKey(this.p.x, this.p.z), evs = [];
     const all = [{ id: 'me', x: this.p.x, z: this.p.z, dead: this.p.mode === 'dead' }];
     for (const q of C.joinedPeers) if (q.has) all.push({ id: q.uid, x: q.x, z: q.z, dead: q.dead });
     const run = (sim, zk, always) => { const ps = all.filter((p) => zoneKey(p.x, p.z) === zk); if (!ps.length && !always) return; for (const ev of sim.update(dt, ps)) { ev.zn = zk; evs.push(ev); } };
-    run(this.localSim, 'ow', true); run(this.dsim, 'barrow'); run(this.msim, 'mine');
+    run(this.localSim, 'ow', true); run(this.dsim, 'barrow'); run(this.msim, 'mine'); run(this.bsim, 'belfry'); run(this.ysim, 'pyramid');
     for (const ev of evs) if (ev.zn === myZ) this.handleEnemyEvent(ev);
     C.hostEvents(evs);
   }
@@ -564,6 +582,8 @@ export class Game {
       else for (const e of this.netEnemies.values()) e.st += dt;
       if (this.dungeonId === 'barrow') for (const ev of this.dsim.update(dt, me)) this.handleEnemyEvent(ev);
       if (this.dungeonId === 'mine') for (const ev of this.msim.update(dt, me)) this.handleEnemyEvent(ev);
+      if (this.dungeonId === 'belfry') for (const ev of this.bsim.update(dt, me)) this.handleEnemyEvent(ev);
+      if (this.dungeonId === 'pyramid') for (const ev of this.ysim.update(dt, me)) this.handleEnemyEvent(ev);
     }
     for (const e of this.allEnemies()) {
       let v = this.views.get(e.id);
@@ -575,7 +595,7 @@ export class Game {
     // fireballs from Cinder Imps
     this.fireballs ||= new Map();
     const live = new Set();
-    const projs = this.coopGuest ? (this.netProj || []).map(([key, x, z]) => ({ key, x, z })) : [this.localSim, this.msim].flatMap((sim) => sim.proj.map((q) => ({ key: q.n + ':' + q.id, x: q.x, z: q.z })));
+    const projs = this.coopGuest ? (this.netProj || []).map(([key, x, z]) => ({ key, x, z })) : [this.localSim, this.msim, this.bsim, this.ysim].flatMap((sim) => sim.proj.map((q) => ({ key: q.n + ':' + q.id, x: q.x, z: q.z })));
     for (const q of projs) {
       live.add(q.key);
       let m = this.fireballs.get(q.key);
@@ -586,8 +606,10 @@ export class Game {
   }
   handleEnemyEvent(ev) {
     if (ev.t === 'fire') this.audio.play('fire');
-    if (ev.t === 'roar') { this.audio.play('roar'); UI.banner('Magmaw, the Furnace Worm', 'Bomb its open maw!', 'boss'); }
-    if (ev.t === 'phase') { this.shake = 0.5; this.audio.play('roar'); UI.toast(ev.phase === 3 ? 'Magmaw is enraged — the ground erupts beneath you!' : 'Magmaw thrashes and dives deeper…', 'bad'); }
+    const bt = ev.boss || this.enemyById(ev.id || '')?.type || this.enemySpawnType.get(ev.id);
+    const isMag = !bt || bt === 'magmaw';
+    if (ev.t === 'roar') { this.audio.play('roar'); if (isMag) UI.banner('Magmaw, the Furnace Worm', 'Bomb its open maw!', 'boss'); else if (bt !== 'vael' && ENEMY_TYPES[bt]?.boss) UI.banner(ENEMY_TYPES[bt].name, ENEMY_TYPES[bt].hint || 'Watch for the glowing tell, then roll!', 'boss'); }
+    if (ev.t === 'phase') { this.shake = 0.5; this.audio.play('roar'); UI.toast(isMag ? (ev.phase === 3 ? 'Magmaw is enraged — the ground erupts beneath you!' : 'Magmaw thrashes and dives deeper…') : `${ENEMY_TYPES[bt]?.name || 'The boss'} enters phase ${ev.phase}!${bt === 'vael' ? ' Ink lines sweep the floor. Roll through them!' : ''}`, 'bad'); }
     if (ev.t !== 'hit') return;
     const p = this.p;
     if (p.mode === 'dead') return;
@@ -607,10 +629,13 @@ export class Game {
       if (p.stam <= 0) { UI.toast('Guard broken!', 'bad'); p.mode = 'hurt'; p.mt = 0; }
       return;
     }
+    this.onStatusHit?.(ev);
     this.hurt(ev.dmg, ev.sx, ev.sz);
   }
-  hurt(dmg, sx, sz) {
-    const p = this.p; if (p.mode === 'dead' || this.god) return;
+  hurt(dmg, sx, sz, stun = 0.35) {
+    const p = this.p; if (p.mode !== 'dead' && this.mounted) this.dismount('You were knocked off your mount!');
+    if (p.mode === 'dead' || this.god) return;
+    this.stunDur = stun;
     // armour: each point of defence gives a 5% chance to shrug off half a heart (min 1)
     const def = this.stats().def; if (dmg > 1 && this.rand() < def * 0.05) dmg -= 1;
     p.hp = Math.max(0, p.hp - dmg); p.inv = 1.0;
@@ -634,6 +659,8 @@ export class Game {
   }
   respawnPoint() {
     if (this.inDungeon) {
+      if (this.dungeonId === 'belfry') { const z = this.p.z, f = this.s.flags; return z < -112 && f.bf_boss ? BELFRY_CP.vael : z < -84 && f.bf_ledge ? BELFRY_CP.loft : z < -66 && f.bf_ledge ? BELFRY_CP.ledge : z < -28 && f.hookshot ? BELFRY_CP.cistern : BELFRY_START; }
+      if (this.dungeonId === 'pyramid') return PYRAMID_START;
       if (this.dungeonId === 'mine') { const z = this.p.z; return z < -112 ? MINE_CP.arena : z < -91 && this.s.flags.q3_bridge ? MINE_CP.lavaN : z < -60 ? MINE_CP.lava : MINE_START; }
       return DUNGEON_START;
     }
@@ -647,12 +674,14 @@ export class Game {
       this.debug.teleport(pt.x, pt.z); p.hp = this.maxHp; p.mode = 'normal'; p.inv = 2; p.stam = 100; this.s.fade = 0;
       if (inD && did === 'barrow' && this.canResetDungeon('barrow')) this.resetDungeonSim();
       if (inD && did === 'mine' && this.canResetDungeon('mine')) this.resetMineSim();
+      if (inD && (did === 'belfry' || did === 'pyramid') && this.canResetDungeon(did)) this.resetV3Sim(did);
+      this.pvpRespawned?.();
     });
   }
   targetables() {
     const zoneD = this.inDungeon, out = [];
-    const pre = this.dungeonId === 'mine' ? 'm_' : 'd_';
-    for (const e of this.allEnemies()) if (e.alive && (zoneD ? e.id.startsWith(pre) : !e.id.startsWith('d_') && !e.id.startsWith('m_'))) out.push(e);
+    const pre = { mine: 'm_', belfry: 'b_', pyramid: 'y_' }[this.dungeonId] || 'd_', dun = /^[dmby]_/;
+    for (const e of this.allEnemies()) if (e.alive && !e.hidden && (zoneD ? e.id.startsWith(pre) : !dun.test(e.id))) out.push(e);
     return out;
   }
   doHit(kind) {
@@ -672,6 +701,7 @@ export class Game {
       if (!spin && dot < 0.25 && d > T.radius + 0.6) continue;
       hits++; this.damageEnemy(e, dmg, kind);
     }
+    hits += this.pvpMelee?.(kind, reach) || 0;
     this.trailT = 0.16; this.trail.position.set(p.x, p.y + 1.1, p.z);
     this.trail.geometry.dispose();
     const len = spin ? Math.PI * 2 : kind === 'attack3' ? 0.5 : Math.PI * 0.9;
@@ -694,7 +724,7 @@ export class Game {
     if (crit) UI.toast('💠 Critical hit!', 'good');
     if (this.coopGuest) { this.net.send({ t: 'attack', id: e.id, dmg, kind: skill, bomb: opts.bomb ? 1 : 0, mouth: opts.mouth ? 1 : 0 }); this.pendingSkill = skill; } // co-op guest: the host decides
     else if (e.id.startsWith('d_')) this.onEnemyDamaged(e.id, this.dsim.damage(e.id, dmg, fx, fz, opts), true, skill);
-    else if (e.id.startsWith('m_')) this.onEnemyDamaged(e.id, this.msim.damage(e.id, dmg, fx, fz, opts), true, skill);
+    else if (/^[mby]_/.test(e.id)) this.onEnemyDamaged(e.id, this.simFor(e.id).damage(e.id, dmg, fx, fz, opts), true, skill);
     else if (this.online) { this.net.send({ t: 'attack', id: e.id, dmg, kind: skill }); this.pendingSkill = skill; }
     else this.onEnemyDamaged(e.id, this.localSim.damage(e.id, dmg, fx, fz, opts), true, skill);
     this.lastAttackHit = { id: e.id, t: this.t };
@@ -721,6 +751,7 @@ export class Game {
       this.audio.play('kill');
       if (this.p.lock && this.p.lock.id === id) this.p.lock = null;
       if (mine) { this.addXp(skill === 'archery' || skill === 'magic' ? skill : 'combat', this.coopGuest ? ENEMY_TYPES[type].xp : r.xp || ENEMY_TYPES[type].xp); if (e) this.rollLoot(type, e.x, e.z); } // loot is personal: rolled and dropped only on this player's screen
+      this.v3Kill?.(id, type, mine);
       if (id === 'd_warden' && (mine || !this.coopGuest)) { this.s.flags.boss = true; this.dungeon.setState(this.dstate()); UI.banner('Barrow Warden defeated!', 'A chest appears…'); this.save(); }
       if (id === 'm_magmaw' && (mine || !this.coopGuest)) { this.s.flags.q3_boss = true; this.mine.setState(this.mineFlags()); this.shake = 1; UI.banner('Magmaw defeated!', 'The lava cools… a chest rises from the crucible'); this.save(); }
     }
@@ -754,6 +785,10 @@ export class Game {
         const L = { door: this.building.isOpen(b.k, b.i) ? 'Close door' : 'Open door', chest: 'Open storage chest', bench: 'Use workbench', campfire: 'Cook on campfire', hearth: this.s.home?.hearth && Math.hypot(this.s.home.hearth.x - b.x, this.s.home.hearth.z - b.z) < 0.1 ? 'Your Hearthstone (respawn point)' : 'Bind to this Hearthstone', bankchest: 'Open bank chest' }[b.type];
         add(b.d + 0.2, 2.4, { kind: 'piece', b, label: L });
       }
+      this.v3OverworldInteracts(add, dist);
+      this.pvpInteracts?.(add, dist);
+    } else if (this.dungeonId === 'belfry') { this.belfryInteracts(add, dist);
+    } else if (this.dungeonId === 'pyramid') { this.pyramidInteracts(add, dist);
     } else if (this.dungeonId === 'mine') {
       this.mineInteracts(add);
     } else {
@@ -772,11 +807,12 @@ export class Game {
     const D = this.dungeon, f = this.s.flags;
     if (it.kind === 'revive') return this.coop?.startRevive(it.r.id);
     if (this.coopGuest) { // in a friend's world: puzzles and the host's furniture are the host's
-      const fw = { lever: 'lever', mswitch: 'mswitch', mcart: 'mcart' }[it.kind];
-      if (fw) { this.net.send({ t: 'act', k: fw }); this.audio.play('ui'); return; }
+      const fw = { lever: 'lever', mswitch: 'mswitch', mcart: 'mcart', bf_valve: 'bf_valve' }[it.kind];
+      if (fw) { this.net.send({ t: 'act', k: fw, i: it.i }); this.audio.play('ui'); return; }
       if (it.kind === 'piece' && it.b.type === 'door') { this.net.send({ t: 'act', k: 'door', key: it.b.k, i: it.b.i }); this.audio.play('door'); return; }
       if (it.kind === 'piece' && (it.b.type === 'hearth' || it.b.type === 'chest')) return UI.toast('That belongs to the host of this world.', '');
     }
+    if (this.v3Interact(it) || this.pvpInteract?.(it)) return;
     switch (it.kind) {
       case 'npc': it.npc.av.root.rotation.y = Math.atan2(this.p.x - it.npc.x, this.p.z - it.npc.z); return this.talk(it.npc);
       case 'station': this.currentStation = it.st; return this.openPanel(it.station);
@@ -865,6 +901,8 @@ export class Game {
     });
   }
   exitDungeon() {
+    if (this.dungeonId === 'belfry') return this.fade(() => { this.debug.teleport(BELFRY_ENTRANCE.x, BELFRY_ENTRANCE.z + 4); this.p.ry = 0; this.cam.yaw = Math.PI; this.p.lock = null; UI.banner('Mythbound Isle'); this.save(); });
+    if (this.dungeonId === 'pyramid') return this.fade(() => { const e = this.r3.pyramid; this.debug.teleport(e.x, e.z + 5); this.p.ry = 0; this.cam.yaw = Math.PI; this.p.lock = null; UI.banner('Sunscar Desert'); this.save(); });
     if (this.dungeonId === 'mine') return this.fade(() => { const me = this.ridge.mineEntrance; this.debug.teleport(me.x - 4, me.z); this.p.ry = -Math.PI / 2; this.cam.yaw = Math.PI / 2; this.p.lock = null; UI.banner('Emberfall Ridge'); this.save(); });
     this.fade(() => { this.debug.teleport(ENTRANCE.x, ENTRANCE.z + 5); this.p.ry = 0; this.cam.yaw = Math.PI; this.p.lock = null; UI.banner('Mythbound Isle'); this.save(); });
   }
@@ -925,7 +963,7 @@ export class Game {
 
   // ---------------- grapple ----------------
   grapplePoints() {
-    if (this.inDungeon) return this.dungeonId === 'barrow' ? this.dungeon.grapplePoints : [];
+    if (this.inDungeon) { const d = this.dungeonId; return d === 'barrow' ? this.dungeon.grapplePoints : d === 'belfry' ? this.belfry.grapplePoints.filter((g) => !g.hook || this.s.flags.hookshot) : []; }
     return this.building.anchors().map((a) => {
       const dx = a.x - this.p.x, dz = a.z - this.p.z, d = Math.hypot(dx, dz) || 1;
       return { ...a, land: { x: a.x - dx / d * 0.85, z: a.z - dz / d * 0.85 }, landY: a.y - 3.15 };
@@ -933,14 +971,16 @@ export class Game {
   }
   tryGrapple() {
     const p = this.p;
-    if (!this.s.flags.grapple) return UI.toast('You don\'t have a grapple hook yet.', 'bad');
+    if (!this.s.flags.grapple && !this.s.flags.hookshot) return UI.toast('You don\'t have a grapple hook yet.', 'bad');
+    if (this.mounted) this.dismount();
+    const RANGE = this.s.flags.hookshot ? 36 : 24;
     let target = null;
     if (p.lock && p.lock.grapple) target = p.lock;
     else {
       let best = 1e9; const fx = Math.sin(p.ry), fz = Math.cos(p.ry);
       for (const g of this.grapplePoints()) {
         const dx = g.x - p.x, dz = g.z - p.z, d = Math.hypot(dx, dz);
-        if (d > 24 || d < 1.5) continue;
+        if (d > (g.hook ? RANGE : 24) || d < 1.5) continue;
         const camF = -(dx * Math.sin(this.cam.yaw) + dz * Math.cos(this.cam.yaw)) / d;
         if ((dx * fx + dz * fz) / d < 0.5 && camF < 0.6) continue;
         if (d < best) { best = d; target = g; }
@@ -958,11 +998,11 @@ export class Game {
     if (p.lock) { p.lock = null; return; }
     let best = null, bs = 1e9;
     const cfx = -Math.sin(this.cam.yaw), cfz = -Math.cos(this.cam.yaw);
-    const cands = this.targetables().filter((e) => !(e.type === 'magmaw' && e.state === 'submerged')).map((e) => ({ id: e.id, x: e.x, z: e.z, e }));
-    if (this.s.flags.grapple) for (const g of this.grapplePoints()) cands.push({ id: 'gp_' + g.id, x: g.x, z: g.z, grapple: true, g });
+    const cands = [...(this.pvpTargets?.() || [])].concat(this.targetables().filter((e) => !(e.type === 'magmaw' && e.state === 'submerged')).map((e) => ({ id: e.id, x: e.x, z: e.z, e })));
+    if (this.s.flags.grapple || this.s.flags.hookshot) for (const g of this.grapplePoints()) cands.push({ id: 'gp_' + g.id, x: g.x, z: g.z, grapple: true, g });
     for (const c of cands) {
       const dx = c.x - p.x, dz = c.z - p.z, d = Math.hypot(dx, dz);
-      if (d > (c.grapple ? 24 : 16)) continue;
+      if (d > (c.grapple ? (c.g?.hook && this.s.flags.hookshot ? 36 : 24) : 16)) continue;
       const score = d * (1 + (1 - (dx * cfx + dz * cfz) / (d || 1)) * 1.2) + (c.grapple ? 6 : 0);
       if (score < bs) { bs = score; best = c; }
     }
@@ -972,6 +1012,7 @@ export class Game {
   lockPos() {
     const l = this.p.lock; if (!l) return null;
     if (l.grapple) return { x: l.x, y: l.y, z: l.z };
+    if (l.id.startsWith('pl_')) { const q = this.pvpLockPos?.(l.id); if (!q) this.p.lock = null; return q || null; }
     const e = this.enemyById(l.id); if (!e || !e.alive) { this.p.lock = null; return null; }
     const v = this.views.get(l.id);
     return { x: v ? v.x : e.x, y: this.terrainH(e.x, e.z) + (e.type === 'magmaw' ? 5 : ENEMY_TYPES[e.type].boss ? 3 : 1.2), z: v ? v.z : e.z };
@@ -1032,8 +1073,10 @@ export class Game {
       }
       if (I.wasPressed('lock') && !this.buildMode) this.toggleLock();
       const free = p.mode === 'normal' || p.mode === 'block';
-      if (free && !this.buildMode) {
-        if (I.wasPressed('attack')) { if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
+      const mountedBlock = this.mounted && (I.wasPressed('attack') || I.wasPressed('bow') || I.wasPressed('spell') || I.wasPressed('bomb'));
+      if (mountedBlock) { this.dismount(); UI.toast('You hop off your mount to fight.', ''); }
+      if (free && !this.buildMode && !mountedBlock) {
+        if (I.wasPressed('attack')) { if (this.pvpSafe?.()) UI.toast('No fighting here.', ''); else if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
         else if (I.wasPressed('roll') && p.stam >= 10 && p.grounded) { p.mode = 'roll'; p.mt = 0; this.useStam(22); p.rdx = wl > 0.1 ? wx / wl : (lockP ? -fx : Math.sin(p.ry)); p.rdz = wl > 0.1 ? wz / wl : (lockP ? -fz : Math.cos(p.ry)); }
         else if (I.wasPressed('grapple')) this.tryGrapple();
         else if (I.wasPressed('bomb')) this.throwBomb();
@@ -1061,7 +1104,7 @@ export class Game {
     switch (p.mode) {
       case 'normal': case 'block': {
         const sprint = I.isDown('sprint') && !lockP && moving && p.stam > 0 && p.mode === 'normal';
-        speed = p.mode === 'block' ? 2.2 : lockP ? 4.6 : sprint ? 8.5 : 5.6;
+        speed = (p.mode === 'block' ? 2.2 : lockP ? 4.6 : sprint ? 8.5 : 5.6) * (this.mounted ? this.mountSpeed() * (sprint ? 0.85 : 1) : 1) * (this.slowT > 0 ? 0.55 : 1) * (this.buffs?.stamina ? 1.05 : 1);
         if (sprint) this.useStam(14 * dt);
         if (wl > 0.1) { dirx = wx / wl; dirz = wz / wl; speed *= Math.min(1, Math.hypot(mv.x, mv.y)); } else speed = 0;
         if (lockP) p.ry = lerpAngle(p.ry, Math.atan2(lockP.x - p.x, lockP.z - p.z), 1 - Math.exp(-dt * 14));
@@ -1106,7 +1149,7 @@ export class Game {
       }
       case 'hurt':
         p.kx *= Math.exp(-dt * 6); p.kz *= Math.exp(-dt * 6);
-        if (p.mt > 0.35) p.mode = 'normal';
+        if (p.mt > (this.stunDur ?? 0.35)) p.mode = 'normal';
         break;
       case 'dead':
         if (p.mt > (this.downedT && this.coop?.active ? this.downedT : 2.2) && !this.respawning) { this.downedT = 0; this.respawning = true; this.respawn(); setTimeout(() => (this.respawning = false), 600); }
@@ -1130,7 +1173,7 @@ export class Game {
     if (Math.abs(p.kx) + Math.abs(p.kz) > 0.05) { this.collide(p.x + p.kx * dt, p.z + p.kz * dt, false); p.kx *= Math.exp(-dt * 8); p.kz *= Math.exp(-dt * 8); }
     // horizontal movement
     if (speed > 0) {
-      const wade = !this.inDungeon && p.y < 0.1 ? 0.6 : 1;
+      const wade = !this.inDungeon && p.y < 0.1 ? 0.6 : 1; if (this.mounted && wade < 1 && p.y < -0.6) this.dismount('Too deep to ride.');
       this.collide(p.x + dirx * speed * wade * dt, p.z + dirz * speed * wade * dt, true);
     }
     p.speed = speed;
@@ -1144,12 +1187,12 @@ export class Game {
     }
     // fell into the chasm
     if (this.inDungeon && p.y < -5 && p.mode !== 'dead') {
-      const cp = p.z < -36 ? CHECKPOINT : DUNGEON_START;
+      const cp = this.dungeonId === 'barrow' ? (p.z < -36 ? CHECKPOINT : DUNGEON_START) : this.respawnPoint();
       this.debug.teleport(cp.x, cp.z, 0); p.ry = Math.PI; p.lock = null; p.mode = 'normal';
       UI.toast('You fell into the chasm!', 'bad'); this.hurt(1, p.x, p.z + 1); if (p.mode === 'hurt') { p.kx = p.kz = 0; }
     }
     // avatar
-    this.player.root.position.set(p.x, p.y, p.z); this.player.root.rotation.y = p.ry;
+    this.player.root.position.set(p.x, p.y + (this.mounted ? 0.85 : 0), p.z); this.player.root.rotation.y = p.ry;
     this.player.root.visible = !(p.inv > 0 && p.mode !== 'dead' && Math.sin(this.t * 40) > 0.3);
     const gd = p.mode === 'gather' && NODE_TYPES[p.gnode.type];
     const tool = gd ? (gd.skill === 'woodcutting' ? 'axe' : gd.fish ? 'rod' : 'pick') : null;
@@ -1248,7 +1291,7 @@ export class Game {
     const z = this.zoneName(), zk = z + (this.dungeonId || '');
     if (zk !== this.lastZone) {
       this.lastZone = zk;
-      UI.zone(z === 'village' ? '🛡 Oakhollow Village · safe' : z === 'camp' ? '🔥 Ashfall Camp · safe' : z === 'ember' ? '🌋 Emberfall Ridge' : z === 'dungeon' ? (this.dungeonId === 'mine' ? '⛏ Cinderdeep Mine' : '☠ The Hollow Barrow') : '🌲 The Wilds · build & fight', z);
+      UI.zone(this.v3ZoneLabel?.(z) || (z === 'village' ? '🛡 Oakhollow Village · safe' : z === 'camp' ? '🔥 Ashfall Camp · safe' : z === 'ember' ? '🌋 Emberfall Ridge' : z === 'dungeon' ? (this.dungeonId === 'mine' ? '⛏ Cinderdeep Mine' : '☠ The Hollow Barrow') : '🌲 The Wilds · build & fight'), z);
       if (z === 'ember' && this.lastZoneShown === 'camp' && !this.s.flags.seenRidge) { this.s.flags.seenRidge = true; UI.banner('Emberfall Ridge', 'Ash, lava and the creeping Fade'); }
       if (z === 'camp' && this.s.flags.q2_start && !this.s.flags.q2_camp) UI.toast('Ashfall Camp — find Scout Corin', '');
       this.lastZoneShown = z;
@@ -1329,6 +1372,7 @@ export class Game {
     if (this.phase !== 'play') return 'village';
     if (this.visionOn) return 'vael';
     if (this.dungeonId === 'mine') { const m = this.msim.enemies.get('m_magmaw'); return m && m.alive && m.state !== 'idle' ? 'boss' : 'mine'; }
+    { const m = this.v3Music?.(); if (m) return m; }
     if (this.dungeonId === 'barrow') { const w = this.dsim.enemies.get('d_warden'); return w && w.alive && w.state !== 'idle' && w.state !== 'return' ? 'boss' : 'barrow'; }
     const z = this.zoneName(); return z === 'village' ? 'village' : z === 'camp' ? 'camp' : z === 'ember' ? 'ember' : 'wild';
   }
@@ -1336,6 +1380,7 @@ export class Game {
     if (this.phase === 'play') {
       this.updatePlayer(dt); this.updateEnemies(dt); this.updateRemotes(dt); this.updateNodes(); this.sendState(dt); this.coop?.update(dt);
       this.updateBombs(dt); this.updateFlashes(dt); this.updateProjs(dt); this.updateHazards(dt); this.updateTraps(dt); this.updateLoot(dt); this.updatePets(dt);
+      this.v3Frame(dt); this.pvpFrame?.(dt);
       this.updateHUD();
     } else {
       this.p.ry = 0.4;
@@ -1365,9 +1410,12 @@ export class Game {
     this.ridge.update(this.t, dt, focus, this.zoneName());
     const tod = this.todOverride ?? ((Date.now() / 1000 / 600 + 0.12) % 1);
     this.world.setTime(tod, focus, this.inDungeon, did || this.zoneName());
+    this.v3Visuals(dt);
     this.audio.setTrack(this.musicTrack());
     this.input.endFrame();
     this.renderer.render(this.scene, this.camera);
   }
 }
 Object.assign(Game.prototype, RPG, Story, Systems);
+installV3(Game);
+installPvP(Game);

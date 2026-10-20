@@ -5,7 +5,10 @@
 import {
   ENEMY_TYPES, PIECES, TELEPORTS, HEARTHSTONES, CAMP, SPAWN, DUNGEON_START, MINE_START, ENTRANCE,
   zoneAt, dungeonAt, inWorldBounds, pieceType, cellCenter, NODE_TYPES,
+  V3_HEARTHS, BELFRY_START, PYRAMID_START, BELFRY_ENTRANCE, ARENA,
 } from './shared.js';
+import { BELFRY_CP } from './belfry.js';
+import { ARENA_SPAWNS } from './pvp.js';
 import { MINE_CP } from './mine.js';
 import { CHECKPOINT } from './dungeon.js';
 import { makeLabel } from './world.js';
@@ -18,7 +21,7 @@ export const DOWN_TIME = 20;         // downed players respawn at a Hearthstone 
 export const BOSS_HP_PER_PLAYER = 0.75;
 export const bossScale = (n) => 1 + BOSS_HP_PER_PLAYER * (Math.max(1, Math.min(N.MAX_PLAYERS, n)) - 1);
 export const EMOTES = { wave: '👋', cheer: '🎉', thumbs: '👍', help: '❗', laugh: '😄' };
-export const PUZZLE_KEYS = ['lever', 'boss', 'm_switch', 'q3_cart', 'q3_bridge', 'q3_boss'];
+export const PUZZLE_KEYS = ['lever', 'boss', 'm_switch', 'q3_cart', 'q3_bridge', 'q3_boss', 'bf_w1', 'bf_w2', 'bf_boss', 'bf_vael', 'py_open'];
 const MAX_SPEED = 28, MAX_DMG = 30, SNAP_RADIUS = 115;
 const now = () => performance.now();
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -125,6 +128,8 @@ export class Coop {
       case 'build': return this.onGuestBuild(peer, m);
       case 'act': return this.onGuestAct(peer, m);
       case 'revive': return this.onGuestRevive(peer, m);
+      case 'pvp': return this.g.pvpHostRx?.(peer.uid, m);
+      case 'trade': return this.g.tradeHostRx?.(peer.uid, m);
       case 'ping': return this.sendTo(peer, { t: 'pong', c: N.num(m.c) });
       case 'pong': peer.ping = Math.max(0, Math.round(now() - N.num(m.c, now()))); return;
       case 'bye': return peer.link?.close('left');
@@ -159,6 +164,9 @@ export class Coop {
     const g = this.g, me = g.ridge?.mineEntrance;
     const pts = [...TELEPORTS, ...HEARTHSTONES, CAMP, { x: CAMP.x + 1, z: CAMP.z + 2 }, { x: CAMP.x + 4.5, z: CAMP.z + 2.5 }, SPAWN, DUNGEON_START, MINE_START, CHECKPOINT, ...Object.values(MINE_CP), { x: ENTRANCE.x, z: ENTRANCE.z + 5 }];
     if (me) pts.push({ x: me.x - 4, z: me.z });
+    pts.push(...V3_HEARTHS, BELFRY_START, PYRAMID_START, ...Object.values(BELFRY_CP), { x: BELFRY_ENTRANCE.x, z: BELFRY_ENTRANCE.z + 4 }, ...ARENA_SPAWNS, { x: ARENA.x, z: ARENA.z + ARENA.r + 4 });
+    if (g.r3?.pyramid) pts.push({ x: g.r3.pyramid.x, z: g.r3.pyramid.z + 5 });
+    for (const q of g.travelPoints?.() || []) pts.push(q);
     if (peer.hearth) pts.push({ x: peer.hearth.x + 1.5, z: peer.hearth.z + 1.5 });
     if (peer.joinPos) pts.push(peer.joinPos);
     pts.push({ x: g.p.x, z: g.p.z }); for (const q of this.joinedPeers) if (q !== peer) pts.push({ x: q.x, z: q.z });
@@ -178,7 +186,7 @@ export class Coop {
       if (!peer.corrT || t - peer.corrT > 500) { peer.corrT = t; this.sendTo(peer, { t: 'correct', x: peer.x, y: peer.y, z: peer.z }); }
       peer.lastStateT = t; return;
     }
-    peer.x = x; peer.y = y; peer.z = z; peer.ry = N.num(m.ry); peer.a = N.cleanText(m.a, 12) || 'idle'; peer.dead = !!m.dead; peer.lastStateT = t; peer.has = true;
+    peer.x = x; peer.y = y; peer.z = z; peer.ry = N.num(m.ry); peer.a = N.cleanText(m.a, 12) || 'idle'; peer.dead = !!m.dead; peer.mounted = !!m.mo; peer.lastStateT = t; peer.has = true;
     peer.mhp = N.clamp(N.num(m.mhp, peer.mhp) | 0, 2, 40); peer.hp = N.clamp(N.num(m.hp, peer.hp) | 0, 0, peer.mhp);
     if (typeof m.sword === 'string' && /^[a-z]{2,10}$/.test(m.sword) && peer.look && m.sword !== peer.look.sword) { peer.look.sword = m.sword; const r = this.g.remotes.get(peer.uid); r?.av.setSword?.(m.sword); this.broadcast({ t: 'look', id: peer.uid, look: peer.look }, peer); }
     this.g.remoteSample(peer.uid, x, y, z, peer.ry, peer.a, peer.dead);
@@ -223,6 +231,7 @@ export class Coop {
     if (peer.dead) return;
     const zk = zoneKey(peer.x, peer.z);
     if (m.k === 'lever' && zk === 'barrow' && !g.dungeon.lever.pulled && d(g.dungeon.lever) < 3) { g.interact({ kind: 'lever' }); UI.toast(`${peer.name} pulled the lever.`, ''); }
+    else if (m.k === 'bf_valve' && zk === 'belfry') { const i = N.num(m.i, -1) | 0, v = g.belfry.valves[i]; if (v && d(v) < 3.2) { g.belfryValve(i); UI.toast(`${peer.name} rang a bell.`, ''); } }
     else if (m.k === 'mswitch' && zk === 'mine' && d(g.mine.sw) < 3) g.mineInteract({ kind: 'mswitch' });
     else if (m.k === 'mcart' && zk === 'mine' && d(g.mine.cart) < 3.4 && !g.mine.cart.moving && !g.mine.cart.done) g.mineInteract({ kind: 'mcart' });
     else if (m.k === 'door' && zk === 'ow') {
@@ -260,7 +269,7 @@ export class Coop {
   puzzle() { const f = this.g.s.flags, o = {}; for (const k of PUZZLE_KEYS) o[k] = !!f[k]; return o; }
   applyBossScale() {
     const k = this.isHost ? bossScale(this.partySize) : 1, g = this.g;
-    for (const sim of [g.localSim, g.dsim, g.msim]) {
+    for (const sim of [g.localSim, g.dsim, g.msim, g.bsim, g.ysim]) {
       if (!sim) continue; sim.bossScale = k;
       for (const e of sim.enemies.values()) {
         const T = ENEMY_TYPES[e.type]; if (!T.boss) continue;
@@ -270,11 +279,11 @@ export class Coop {
     }
   }
   enemyRows(x, z) {
-    const g = this.g, zk = zoneKey(x, z), sim = zk === 'barrow' ? g.dsim : zk === 'mine' ? g.msim : g.localSim, out = [];
-    for (const e of sim.enemies.values()) if (Math.abs(e.x - x) + Math.abs(e.z - z) < SNAP_RADIUS * 1.4 && Math.hypot(e.x - x, e.z - z) < SNAP_RADIUS) out.push([e.id, r2(e.x), r2(e.z), r2(e.ry), e.state, r2(e.st), e.hp, e.alive ? 1 : 0, e.kind, e.atk, e.max, e.type]);
+    const g = this.g, zk = zoneKey(x, z), sim = zk === 'barrow' ? g.dsim : zk === 'mine' ? g.msim : zk === 'belfry' ? g.bsim : zk === 'pyramid' ? g.ysim : g.localSim, out = [];
+    for (const e of sim.enemies.values()) if (!e.hidden && Math.abs(e.x - x) + Math.abs(e.z - z) < SNAP_RADIUS * 1.4 && Math.hypot(e.x - x, e.z - z) < SNAP_RADIUS) out.push([e.id, r2(e.x), r2(e.z), r2(e.ry), e.state, r2(e.st), e.hp, e.alive ? 1 : 0, e.kind, e.atk, e.max, e.type]);
     return out;
   }
-  projRows(x, z) { const g = this.g, zk = zoneKey(x, z), sim = zk === 'mine' ? g.msim : zk === 'ow' ? g.localSim : null; return sim ? sim.proj.filter((q) => Math.hypot(q.x - x, q.z - z) < 60).map((q) => [q.n + ':' + q.id, r2(q.x), r2(q.z)]) : []; }
+  projRows(x, z) { const g = this.g, zk = zoneKey(x, z), sim = zk === 'mine' ? g.msim : zk === 'ow' ? g.localSim : zk === 'belfry' ? g.bsim : zk === 'pyramid' ? g.ysim : null; return sim ? sim.proj.filter((q) => Math.hypot(q.x - x, q.z - z) < 60).map((q) => [q.n + ':' + q.id, r2(q.x), r2(q.z)]) : []; }
   // enemy events from the host's sims, tagged with the zone they happened in
   hostEvents(list) {
     if (!this.isHost || !list.length) return;
@@ -404,7 +413,9 @@ export class Coop {
       case 'blocks': if (typeof m.k === 'string' && Array.isArray(m.s)) g.onBlocks(m); return;
       case 'buildFail': UI.toast(N.cleanText(m.reason, 120), 'bad'); g.lastBuild = { ok: false, reason: m.reason }; return;
       case 'doors': { const want = new Set((m.open || []).map(String)); for (const key of [...g.building.open]) if (!want.has(key)) { const [k, i] = key.split('#'); g.building.toggleDoor(k, +i); } for (const key of want) if (!g.building.open.has(key)) { const [k, i] = key.split('#'); if (g.building.stacks.get(k)) g.building.toggleDoor(k, +i); } return; }
-      case 'puzzle': this.hostPuzzle = m.f || {}; g.applyWorldState(); return;
+      case 'puzzle': this.hostPuzzle = m.f || {}; g.applyWorldState(); g.belfry?.setState(g.belfryFlags()); g.pyramid?.setState({ ...g.s.flags, py_open: !!this.hostPuzzle.py_open || !!g.s.flags.py_open }); return;
+      case 'pvp': return g.pvpGuestRx?.(m);
+      case 'trade': return g.tradeGuestRx?.(m);
       case 'cart': if (g.mine && !g.mine.cart.moving) g.mine.pushCart(); return;
       case 'chat': { const text = N.filterProfanity(N.cleanText(m.text, 200)); UI.chatLine(m.sys ? null : N.cleanText(m.name, 16), text, m.sys ? 'sys' : m.id === this.me ? 'me' : ''); g.messages.push({ ...m, text }); return; }
       case 'emote': if (EMOTES[m.e]) this.showEmote(m.id, m.e); return;

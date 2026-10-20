@@ -4,6 +4,7 @@ const KEYMAP = {
   ShiftLeft: 'sprint', ShiftRight: 'sprint', KeyC: 'skills', KeyI: 'bag', KeyH: 'help', Enter: 'chat', Escape: 'escape',
   Digit1: 'piece1', Digit2: 'piece2', Digit3: 'piece3', Digit4: 'piece4', Digit5: 'piece5', Digit6: 'piece6', Digit7: 'piece7', Digit8: 'piece8', Digit9: 'piece9', Digit0: 'piece10',
   KeyX: 'remove', KeyF: 'place', KeyR: 'bomb', KeyV: 'bow', KeyT: 'spell', KeyZ: 'quick', KeyL: 'journal', KeyK: 'spellbook', KeyO: 'settings', KeyP: 'claim',
+  KeyM: 'map', KeyN: 'mount', KeyY: 'tasks', KeyU: 'pvp',
 };
 export class Input {
   constructor(canvas) {
@@ -50,6 +51,13 @@ export class Input {
   endFrame() { this.pressed.clear(); this.released.clear(); }
 
   // ---- touch controls (phone) ----
+  bindTouchButton(b) {
+    if (b.dataset.bound) return; b.dataset.bound = '1';
+    const act = () => b.dataset.act;
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); b.setPointerCapture(e.pointerId); b.classList.add('on'); this.press(act()); });
+    const up = (e) => { b.classList.remove('on'); this.release(act()); };
+    b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
+  }
   attachTouch(root) {
     this.touch = true;
     const joy = root.querySelector('#joy'), knob = root.querySelector('#joy-knob');
@@ -60,12 +68,7 @@ export class Input {
     joy.addEventListener('pointermove', (e) => { if (e.pointerId === joyId) upd(e); });
     const end = (e) => { if (e.pointerId !== joyId) return; joyId = null; this.joy.x = this.joy.y = 0; knob.style.transform = ''; };
     joy.addEventListener('pointerup', end); joy.addEventListener('pointercancel', end);
-    root.querySelectorAll('[data-act]').forEach((b) => {
-      const act = () => b.dataset.act;
-      b.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); b.setPointerCapture(e.pointerId); b.classList.add('on'); this.press(act()); });
-      const up = (e) => { b.classList.remove('on'); this.release(act()); };
-      b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up);
-    });
+    root.querySelectorAll('[data-act]').forEach((b) => this.bindTouchButton(b));
     // camera drag anywhere on the canvas
     let camId = null, lx = 0, ly = 0;
     this.canvas.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse' || camId !== null) return; camId = e.pointerId; lx = e.clientX; ly = e.clientY; });

@@ -245,3 +245,58 @@ body.touch #coopbar { left: 50%; transform: translateX(-50%); top: calc(42px + e
 body.touch #party { flex-direction: row; } body.touch .pf { min-width: 0; padding: 2px 7px; font-size: 12px; } body.touch .pf .pf-p { display: none; }
 body.touch #emotes button { width: 32px; height: 32px; font-size: 15px; }
 @media (max-height: 500px) { .coop-dlg { padding: 8px 12px; } .coop-code { font-size: 28px; padding: 2px 0; } .coop-dlg h3 { margin: 4px 0 2px; } .coop-row, .coop-join { margin: 5px 0; } .coop-btn { margin-top: 6px; padding: 6px 10px; } .pf { min-width: 120px; padding: 2px 6px; font-size: 12px; } }
+
+/* ---------- v3.0 ---------- */
+#topbtns { flex-wrap: nowrap; max-width: calc(100vw - 28px); }
+#topbtns button { flex: none; }
+#btn-install { display: inline-flex; align-items: center; justify-content: center; }
+#btn-install.hidden { display: none; }
+@media (max-width: 1400px) { #topbtns { gap: 4px; } #topbtns button { width: 38px; height: 38px; font-size: 17px; } }
+@media (max-width: 760px) { #topbtns button { width: 34px; height: 34px; font-size: 15px; } }
+.v3meter { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: #fff; text-shadow: 0 1px 2px #000; }
+.v3meter.hidden { display: none; }
+.v3meter > div { width: 110px; height: 8px; border-radius: 4px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.3); overflow: hidden; }
+.v3meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #8ad0ff, #e8f6ff); }
+#heatmeter i { background: linear-gradient(90deg, #ffb040, #ff5020); } #poisonmeter i { background: linear-gradient(90deg, #60c040, #a0ff60); }
+.v3meter.max { animation: v3pulse .6s infinite alternate; } @keyframes v3pulse { to { opacity: .45; } }
+#buffs { display: flex; gap: 4px; margin-top: 4px; } #buffs span { background: rgba(20,16,10,.7); border: 1px solid #8a6a3a; border-radius: 6px; padding: 1px 5px; font-size: 12px; color: #fff; }
+#skullbadge { background: #5a1010; color: #fff; border: 1px solid #ff6040; border-radius: 6px; padding: 2px 6px; margin-left: 6px; font-size: 12px; }
+#weather-badge { margin-left: 6px; font-size: 12px; color: #fff; text-shadow: 0 1px 2px #000; }
+#whatsnew { position: fixed; right: 14px; top: 64px; z-index: 900; max-width: min(420px, 92vw); pointer-events: auto; }
+#whatsnew .wncard, #act1 .a1card, #invite .invcard { background: rgba(20,16,10,.95); border: 2px solid #c8a040; border-radius: 12px; padding: 12px 16px; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.6); }
+#whatsnew h2 { margin: 0 0 6px; font-size: 18px; color: #ffcf7a; } #whatsnew ul { list-style: none; margin: 0 0 8px; padding: 0; max-height: 52vh; overflow: auto; }
+#whatsnew li { display: flex; gap: 8px; margin: 5px 0; } #whatsnew li > span { font-size: 20px; } #whatsnew li small { display: block; color: #c8b890; font-size: 12px; }
+#act1 { position: fixed; inset: 0; z-index: 950; display: flex; align-items: center; justify-content: center; background: radial-gradient(rgba(10,8,20,.75), rgba(0,0,0,.92)); }
+#act1.hidden, #whatsnew.hidden, #invite.hidden, #pvphud.hidden, #layoutbar.hidden { display: none; }
+#act1 .a1card { max-width: 560px; text-align: center; } #act1 h1 { margin: 0; color: #ffcf7a; letter-spacing: 2px; } #act1 h2 { margin: 2px 0 10px; color: #bfe4ff; font-weight: normal; }
+.a1stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0; } .a1stats div { background: rgba(255,255,255,.06); border-radius: 6px; padding: 6px; }
+.tease { color: #e0c8ff; } button.primary { background: linear-gradient(#c8902a, #8a5a18); color: #fff; border-color: #ffcf7a; }
+#invite { position: fixed; left: 50%; top: 18%; transform: translateX(-50%); z-index: 920; } #invite small { display: block; color: #c8b890; margin: 4px 0 8px; } #invite button { margin-right: 6px; }
+#pvphud { position: fixed; left: 50%; top: 58px; transform: translateX(-50%); z-index: 400; min-width: 260px; background: rgba(20,16,10,.82); border: 2px solid #8a3a2a; border-radius: 10px; padding: 6px 10px; color: #fff; font-size: 13px; pointer-events: auto; }
+.pvtitle { font-weight: bold; color: #ffcf7a; margin-bottom: 4px; text-align: center; } .t0 { color: #ff7a6a; } .t1 { color: #7ab8ff; }
+.pvbar { display: grid; grid-template-columns: 90px 1fr 26px; gap: 6px; align-items: center; margin: 2px 0; } .pvbar span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pvbar > div { height: 9px; background: #300; border-radius: 4px; overflow: hidden; } .pvbar i { display: block; height: 100%; background: #e04030; } .pvbar.me i { background: #40c060; }
+#pvphud hr { border: 0; border-top: 1px solid #5a4a3a; margin: 3px 0; } #pvphud button { margin-top: 4px; font-size: 12px; }
+#layoutbar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 1001; display: flex; gap: 8px; align-items: center; background: rgba(20,16,10,.95); border: 2px solid #ffcf7a; border-radius: 10px; padding: 6px 10px; color: #fff; }
+body.layout-edit #touch { z-index: 1000; pointer-events: auto; } body.layout-edit #touch button, body.layout-edit #joy { outline: 2px dashed #ffcf7a; outline-offset: 2px; cursor: move; }
+#touch .dragging { opacity: .7; }
+body.touch #touch button { transform: scale(var(--bs, 1.15)); } body.touch #joy { transform: scale(var(--bs, 1.15)); transform-origin: left bottom; }
+body.layout-edit:not(.touch) #touch button { transform: scale(var(--bs, 1)); }
+#touch button.placed, #joy.placed { position: fixed !important; transform-origin: left top; }
+#tbtns2 { height: auto; display: flex; flex-direction: column; gap: 8px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap; } .tabs button.on { border-color: #ffcf7a; background: #4a3a1c; }
+.task { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin: 4px 0; background: rgba(255,255,255,.05); border-radius: 8px; flex-wrap: wrap; }
+.task b { flex: 1 1 160px; } .task small { color: #c8b890; flex: 1 1 140px; } .task.done { border-left: 3px solid #4aa040; }
+.task .prog { flex: 1 1 100%; height: 6px; background: #2a2218; border-radius: 3px; overflow: hidden; } .task .prog i { display: block; height: 100%; background: #c8a040; }
+.achgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; } .achgrid .ach { padding: 6px; border-radius: 8px; background: rgba(255,255,255,.04); opacity: .55; font-size: 12px; }
+.achgrid .ach.got { opacity: 1; border: 1px solid #c8a040; } .achgrid .ach b { display: block; font-size: 13px; }
+.mtable { width: 100%; border-collapse: collapse; font-size: 13px; } .mtable td, .mtable th { padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,.08); text-align: left; } .mtable tr.me { background: rgba(255,207,122,.12); }
+.mapwrap { position: relative; } .mapwrap canvas { width: 100%; max-height: 62vh; border-radius: 8px; border: 2px solid #8a6a3a; background: #123; display: block; }
+.jcols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; } @media (max-width: 760px) { .jcols { grid-template-columns: 1fr; } }
+.jsec { margin: 8px 0 4px; color: #ffcf7a; font-size: 15px; } .jq h4 { margin: 6px 0 2px; } .jq ol { margin: 0; padding-left: 20px; font-size: 13px; } .jq li.done { color: #8a9a7a; text-decoration: line-through; } .jq li.cur { color: #fff; font-weight: bold; } .jq.locked { opacity: .6; }
+.pvrules { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; font-size: 13px; } .tradebag { display: flex; flex-wrap: wrap; gap: 4px; max-height: 140px; overflow: auto; }
+.tradebag .slot { width: 42px; height: 42px; position: relative; font-size: 20px; } .tradebag .slot small { position: absolute; right: 2px; bottom: 0; font-size: 10px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.task .bar { flex: 1 1 100%; height: 6px; background: #2a2218; border-radius: 3px; overflow: hidden; } .task .bar i { display: block; height: 100%; background: #c8a040; }
+.maplist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; } .maplist button[disabled] { opacity: .45; }
+.up { color: #6fd06f; } .dn { color: #ff7a6a; } .colgrid .cell.missing { opacity: .25; filter: grayscale(1); }

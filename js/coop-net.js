@@ -61,7 +61,7 @@ export class RateLimiter {
 // per-message-type limits for guest -> host traffic (anything else is dropped)
 export const GUEST_LIMITS = {
   hello: [0.2, 2], state: [30, 40], attack: [8, 12], chat: [1.2, 6], emote: [1, 3], gather: [3, 5], build: [4, 6], act: [2, 4],
-  revive: [2, 4], ping: [2, 4], pong: [2, 4], bye: [1, 2],
+  revive: [2, 4], ping: [2, 4], pong: [2, 4], bye: [1, 2], pvp: [12, 16], trade: [4, 8],
 };
 export function makeLimiters(now) { const o = { all: new RateLimiter(70, 90, now) }; for (const [k, [r, b]] of Object.entries(GUEST_LIMITS)) o[k] = new RateLimiter(r, b, now); return o; }
 export function parseMsg(raw) {

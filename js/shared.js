@@ -10,7 +10,7 @@ export const DUNGEON_X = 2000;           // dungeon interior lives far east of t
 export const DUNGEON_START = { x: DUNGEON_X, z: 6 };
 export const BLOCK = 1.5;                // building grid cell size (cubes)
 export const MAX_STACK = 8;
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 // ---- v2: Emberfall Ridge (volcanic foothills east of the isle), Cinderdeep Mine interior ----
 export const RIDGE = { x: 232, z: -10, r: 88 };
 export const CAMP = { x: RIDGE.x - 50, z: -6, r: 12 };              // Ashfall Camp (safe zone, Hearthstone + merchant)
@@ -103,8 +103,69 @@ function ridgeHeight(x, z) {
 // terrain without the bridge deck (used for the terrain meshes)
 export function terrainHeight(x, z) {
   const hi = x < 150 ? isleHeight(x, z) : -30;
-  if (x < 140) return hi;
-  return Math.max(hi, ridgeHeight(x, z));
+  const rg = regionHeight(x, z);
+  if (x < 140) return Math.max(hi, rg);
+  return Math.max(hi, v3Flatten(x, z, ridgeHeight(x, z)), rg);
+}
+// ---------- v3 regions (Frostspire Peaks, Sunscar Desert, Mirewood Swamp, Starfall Coast) ----------
+export const REGIONS = {
+  frost: { x: 0, z: -248, r: 84, name: 'Frostspire Peaks', icon: '🏔', sub: 'Snow, blizzards and the Frost Wyrm' },
+  desert: { x: 10, z: 248, r: 88, name: 'Sunscar Desert', icon: '🏜', sub: 'Dunes, sandstorms and a buried pyramid' },
+  swamp: { x: -236, z: 8, r: 78, name: 'Mirewood Swamp', icon: '🌿', sub: 'Poison bogs and bog witches' },
+  coast: { x: 252, z: 168, r: 66, name: 'Starfall Coast', icon: '⚓', sub: 'Beaches, pirates and deep-sea fishing' },
+};
+const RG = REGIONS;
+export const SHRINE = { x: RG.frost.x, z: RG.frost.z - 18 };                 // Frostspire summit shrine
+export const WYRM_LAIR = { x: RG.frost.x + 30, z: RG.frost.z - 30 };
+export const OASIS = { x: RG.desert.x - 2, z: RG.desert.z - 36, r: 13 };    // Sunscar oasis town (safe: merchant + bank)
+export const PYRAMID = { x: RG.desert.x + 38, z: RG.desert.z + 26 };       // ruined pyramid entrance
+export const SANDWORM_PIT = { x: RG.desert.x - 42, z: RG.desert.z + 28 };
+export const PORT = { x: RG.coast.x, z: RG.coast.z - 30, r: 12 };          // Starfall port town (safe)
+export const FADELANDS = { x: 226, z: -70, r: 20 };       // opt-in PvP zone on Emberfall Ridge
+export const ARENA = { x: 206, z: 40, r: 13 };            // the Ashfall Arena (PvP hub)
+export const V3_HEARTHS = [
+  { id: 'h_frost', x: RG.frost.x - 14, z: RG.frost.z + 58, flag: 'disc_frost', region: 'frost', name: 'Frostspire Hearthstone' },
+  { id: 'h_oasis', x: OASIS.x + 6, z: OASIS.z - 6, flag: 'disc_desert', region: 'desert', name: 'Oasis Hearthstone' },
+  { id: 'h_swamp', x: RG.swamp.x + 52, z: RG.swamp.z + 4, flag: 'disc_swamp', region: 'swamp', name: 'Mirewood Hearthstone' },
+  { id: 'h_port', x: PORT.x - 8, z: PORT.z - 4, flag: 'disc_coast', region: 'coast', name: 'Starfall Hearthstone' },
+];
+const PADS = [{ ...OASIS, h: 3 }, { ...PORT, h: 2.6 }, { x: SHRINE.x, z: SHRINE.z, r: 7, h: null }, { x: PYRAMID.x, z: PYRAMID.z + 6, r: 8, h: 3 }, { ...ARENA, r: ARENA.r + 3, h: null }, ...V3_HEARTHS.map((q) => ({ x: q.x, z: q.z, r: 3, h: null }))];
+function regionRaw(k, x, z) {
+  const R = REGIONS[k], dx = x - R.x, dz = z - R.z, d = Math.hypot(dx, dz) / R.r;
+  if (d > 1.6) return -30;
+  let h;
+  if (k === 'frost') {
+    h = (1 - Math.pow(Math.min(d, 1.6), 2)) * 10 - 2 + (fbm(x * 0.04 + 3, z * 0.04) - 0.5) * 9 * Math.min(1, d * 1.6);
+    h += Math.exp(-((x - SHRINE.x) ** 2 + (z - SHRINE.z) ** 2) / 900) * 30;
+  } else if (k === 'desert') {
+    h = (1 - Math.pow(Math.min(d, 1.6), 2)) * 6 - 1.5 + Math.sin(x * 0.11 + Math.sin(z * 0.045) * 2.2) * 1.4 * Math.min(1, d * 2) + (fbm(x * 0.03, z * 0.03) - 0.5) * 3;
+    h -= Math.exp(-((x - OASIS.x - 16) ** 2 + (z - OASIS.z) ** 2) / 30) * 5; // the oasis pool
+    h -= Math.exp(-((x - SANDWORM_PIT.x) ** 2 + (z - SANDWORM_PIT.z) ** 2) / 260) * 3;
+  } else if (k === 'swamp') {
+    h = (1 - Math.pow(Math.min(d, 1.6), 2)) * 3.4 + 0.5 + (fbm(x * 0.05 - 9, z * 0.05 + 4) - 0.5) * 3.2;
+  } else {
+    h = (1 - Math.pow(Math.min(d, 1.6), 2.4)) * 7 - 1.6 + (fbm(x * 0.04 + 11, z * 0.04) - 0.5) * 4 * Math.min(1, d * 1.5);
+  }
+  if (d > 1) h = Math.min(h, -2 - (d - 1) * 25);
+  return h;
+}
+function v3Flatten(x, z, h) {
+  for (const p of PADS) {
+    const d = Math.hypot(x - p.x, z - p.z); if (d > p.r + 8) continue;
+    const t = smooth(clamp((d - p.r + 1) / 9, 0, 1)), H = p.h ?? p._h ?? (p._h = (p === PADS[2] ? regionRaw('frost', p.x, p.z) : p === PADS[4] ? ridgeHeight(p.x, p.z) : regionRaw(p.region || nearestRegion(p.x, p.z), p.x, p.z)));
+    h = H + (h - H) * t;
+  }
+  return h;
+}
+function nearestRegion(x, z) { let b = 'frost', bd = 1e9; for (const [k, R] of Object.entries(REGIONS)) { const d = Math.hypot(x - R.x, z - R.z) / R.r; if (d < bd) { bd = d; b = k; } } return b; }
+export function regionHeight(x, z) {
+  let h = -30;
+  for (const k in REGIONS) { const R = REGIONS[k]; if (Math.abs(x - R.x) > R.r * 1.6 || Math.abs(z - R.z) > R.r * 1.6) continue; h = Math.max(h, regionRaw(k, x, z)); }
+  return h > -30 ? v3Flatten(x, z, h) : h;
+}
+export function regionAt(x, z) {
+  for (const k in REGIONS) { const R = REGIONS[k]; if (Math.hypot(x - R.x, z - R.z) < R.r * 1.04) return k; }
+  return null;
 }
 // the Ember Bridge spans the strait between the isle's east shore and Ashfall Camp
 export const BRIDGE = (() => {
@@ -118,9 +179,35 @@ export function bridgeDeck(x, z) {
   const t = (x - BRIDGE.x0) / (BRIDGE.x1 - BRIDGE.x0);
   return BRIDGE.h0 + (BRIDGE.h1 - BRIDGE.h0) * t + Math.sin(t * Math.PI) * 1.6;
 }
+// v3 causeways: plank bridges from the isle / ridge to each new region (axis 'z' = runs north-south at fixed x)
+export const BRIDGES3 = (() => {
+  const mk = (id, axis, c, from, dir, landA, landB) => {
+    let a = from; while (landA(axis === 'z' ? c : a, axis === 'z' ? a : c) >= 1.4 && Math.abs(a - from) < 120) a += dir;
+    let b = a; while (landB(axis === 'z' ? c : b, axis === 'z' ? b : c) < 1.4 && Math.abs(b - a) < 160) b += dir;
+    const s0 = Math.min(a - dir, b + dir), s1 = Math.max(a - dir, b + dir);
+    const p = (t) => (axis === 'z' ? [c, t] : [t, c]);
+    return { id, axis, c, s0, s1, hw: 1.9, h0: Math.max(1.4, terrainHeight(...p(s0))), h1: Math.max(1.4, terrainHeight(...p(s1))) };
+  };
+  const isle = (x, z) => isleHeight(x, z), reg = (x, z) => regionHeight(x, z), rid = (x, z) => ridgeHeight(x, z);
+  return [
+    mk('north', 'z', -18, -100, -0.5, isle, reg),
+    mk('south', 'z', 10, 60, 0.5, isle, reg),
+    mk('west', 'x', 12, -60, -0.5, isle, reg),
+    mk('coast', 'z', 248, 40, 0.5, rid, reg),
+  ];
+})();
+export function bridge3Deck(x, z) {
+  for (const B of BRIDGES3) {
+    const [u, v] = B.axis === 'z' ? [z, x] : [x, z];
+    if (Math.abs(v - B.c) > B.hw || u < B.s0 || u > B.s1) continue;
+    const t = (u - B.s0) / (B.s1 - B.s0); return B.h0 + (B.h1 - B.h0) * t + Math.sin(t * Math.PI) * 1.2;
+  }
+  return null;
+}
 export function islandHeight(x, z) {
   const h = terrainHeight(x, z);
   if (x > BRIDGE.x0 - 1 && x < BRIDGE.x1 + 1) { const d = bridgeDeck(x, z); if (d !== null && d > h) return d; }
+  const d3 = bridge3Deck(x, z); if (d3 !== null && d3 > h) return d3;
   return h;
 }
 export function lavaAt(x, z) {
@@ -130,14 +217,25 @@ export function lavaAt(x, z) {
 export function zoneAt(x, z) {
   if (x > DUNGEON_X - 300) return 'dungeon';
   if (Math.hypot(x - VILLAGE.x, z - VILLAGE.z) < VILLAGE.r) return 'village';
+  if (Math.abs(z) > 140 || x < -140 || (x > 160 && z > 95)) {
+    if (Math.hypot(x - OASIS.x, z - OASIS.z) < OASIS.r) return 'oasis';
+    if (Math.hypot(x - PORT.x, z - PORT.z) < PORT.r) return 'port';
+    const r = regionAt(x, z); if (r) return r;
+  }
+  if (Math.hypot(x - FADELANDS.x, z - FADELANDS.z) < FADELANDS.r) return 'fadelands';
+  if (Math.hypot(x - ARENA.x, z - ARENA.z) < ARENA.r) return 'arena';
   if (x > 150) return Math.hypot(x - CAMP.x, z - CAMP.z) < CAMP.r ? 'camp' : 'ember';
   return 'wild';
 }
-export const isSafeZone = (z) => z === 'village' || z === 'camp';
-export const dungeonAt = (x) => (x > MINE_X - 400 ? 'mine' : 'barrow');
+export const isSafeZone = (z) => z === 'village' || z === 'camp' || z === 'oasis' || z === 'port';
+export const BELFRY_X = 4000, BELFRY_START = { x: 4000, z: 6 }, PYRAMID_X = 5000, PYRAMID_START = { x: 5000, z: 6 };
+export const BELFRY_ENTRANCE = { x: -72, z: 68 };
+export const dungeonAt = (x) => (x > PYRAMID_X - 400 ? 'pyramid' : x > BELFRY_X - 400 ? 'belfry' : x > MINE_X - 400 ? 'mine' : 'barrow');
 export function inWorldBounds(x, z) {
-  if (zoneAt(x, z) === 'dungeon') return dungeonAt(x) === 'mine' ? Math.abs(x - MINE_X) < 60 && z > -170 && z < 40 : Math.abs(x - DUNGEON_X) < 60 && z > -140 && z < 40;
-  return Math.hypot(x, z) < 165 || Math.hypot(x - RIDGE.x, z - RIDGE.z) < 125 || bridgeDeck(x, z) !== null;
+  if (zoneAt(x, z) === 'dungeon') { const d = dungeonAt(x); return d === 'mine' ? Math.abs(x - MINE_X) < 60 && z > -170 && z < 40 : d === 'belfry' ? Math.abs(x - BELFRY_X) < 60 && z > -170 && z < 40 : d === 'pyramid' ? Math.abs(x - PYRAMID_X) < 50 && z > -90 && z < 40 : Math.abs(x - DUNGEON_X) < 60 && z > -140 && z < 40; }
+  if (Math.hypot(x, z) < 165 || Math.hypot(x - RIDGE.x, z - RIDGE.z) < 125 || bridgeDeck(x, z) !== null || bridge3Deck(x, z) !== null) return true;
+  for (const k in REGIONS) { const R = REGIONS[k]; if (Math.hypot(x - R.x, z - R.z) < R.r * 1.25) return true; }
+  return false;
 }
 export function fadePatchAt(x, z, cleared) {
   for (const f of FADE_PATCHES) if (!(cleared && cleared(f)) && Math.hypot(x - f.x, z - f.z) < f.r) return f;
@@ -145,9 +243,9 @@ export function fadePatchAt(x, z, cleared) {
 }
 
 // ---------- skills / items ----------
-export const SKILLS = ['combat', 'archery', 'magic', 'woodcutting', 'mining', 'fishing', 'hunting', 'smithing', 'cooking', 'crafting', 'fletching', 'runemaking'];
-export const SKILL_NAMES = { combat: 'Combat', archery: 'Archery', magic: 'Magic', woodcutting: 'Woodcutting', mining: 'Mining', fishing: 'Fishing', hunting: 'Hunting', smithing: 'Smithing', cooking: 'Cooking', crafting: 'Crafting', fletching: 'Fletching', runemaking: 'Runemaking' };
-export const SKILL_ICONS = { combat: '⚔', archery: '🏹', magic: '✨', woodcutting: '🪓', mining: '⛏', fishing: '🎣', hunting: '🪤', smithing: '🔨', cooking: '🍳', crafting: '🧵', fletching: '🪶', runemaking: '🔮' };
+export const SKILLS = ['combat', 'archery', 'magic', 'woodcutting', 'mining', 'fishing', 'hunting', 'smithing', 'cooking', 'crafting', 'fletching', 'runemaking', 'farming', 'herblore'];
+export const SKILL_NAMES = { combat: 'Combat', archery: 'Archery', magic: 'Magic', woodcutting: 'Woodcutting', mining: 'Mining', fishing: 'Fishing', hunting: 'Hunting', smithing: 'Smithing', cooking: 'Cooking', crafting: 'Crafting', fletching: 'Fletching', runemaking: 'Runemaking', farming: 'Farming', herblore: 'Herblore' };
+export const SKILL_ICONS = { combat: '⚔', archery: '🏹', magic: '✨', woodcutting: '🪓', mining: '⛏', fishing: '🎣', hunting: '🪤', smithing: '🔨', cooking: '🍳', crafting: '🧵', fletching: '🪶', runemaking: '🔮', farming: '🌱', herblore: '⚗' };
 export { MAX_LEVEL };
 const XP_DEN = 2 ** ((MAX_LEVEL - 1) / XP_DOUBLING) - 1;
 export function xpForLevel(L) { L = Math.max(1, Math.min(MAX_LEVEL, L)); return Math.round(XP_AT_MAX * (2 ** ((L - 1) / XP_DOUBLING) - 1) / XP_DEN); }
@@ -412,6 +510,21 @@ export const NODE_TYPES = {
   burrow: { skill: 'hunting', level: 1, xp: 180, trap: 'snare', catch: 6, loot: [['hide', 1, 1], ['raw_meat', 1, 1]], respawn: 20, time: 1.0, label: 'Set Snare (rabbit burrow)' },
   nest: { skill: 'hunting', level: 8, xp: 360, trap: 'snare', catch: 7, loot: [['feather', 1, 6], ['raw_meat', 0.6, 1]], respawn: 25, time: 1.0, label: 'Set Snare (ash fowl nest)' },
   trail: { skill: 'hunting', level: 15, xp: 700, trap: 'box_trap', catch: 9, loot: [['hide', 1, 2], ['raw_meat', 1, 2], ['feather', 0.5, 3]], respawn: 30, time: 1.4, label: 'Set Box Trap (boar trail)' },
+  // ---- v3 ----
+  pine: { skill: 'woodcutting', level: 20, xp: 700, item: 'log', qty: 2, respawn: 25, time: 1.8, label: 'Chop Frostpine' },
+  palm: { skill: 'woodcutting', level: 10, xp: 450, item: 'log', qty: 2, respawn: 25, time: 1.6, label: 'Chop Palm' },
+  mangrove: { skill: 'woodcutting', level: 25, xp: 800, item: 'log', qty: 2, respawn: 25, time: 1.9, label: 'Chop Mangrove' },
+  mithril: { skill: 'mining', level: 30, xp: 900, item: 'mithril_ore', qty: 1, respawn: 45, time: 2.4, label: 'Mine Mithril', gems: 1 },
+  adamant: { skill: 'mining', level: 40, xp: 1300, item: 'adamant_ore', qty: 1, respawn: 60, time: 2.8, label: 'Mine Adamantite', gems: 1 },
+  icefish: { skill: 'fishing', level: 20, xp: 750, item: 'raw_icefish', qty: 1, respawn: 30, time: 3.0, label: 'Ice-fish (hole)', fish: 1 },
+  nightfish: { skill: 'fishing', level: 18, xp: 800, item: 'raw_moonfish', qty: 1, respawn: 30, time: 3.0, label: 'Fish Moonfish <small>(night)</small>', fish: 1, night: 1 },
+  rainfish: { skill: 'fishing', level: 12, xp: 600, item: 'raw_rainbow', qty: 1, respawn: 30, time: 2.8, label: 'Fish Rainbow Trout <small>(rain)</small>', fish: 1, rain: 1 },
+  deepsea: { skill: 'fishing', level: 30, xp: 1100, item: 'raw_swordfish', qty: 1, respawn: 40, time: 3.4, label: 'Deep-sea fish (pier)', fish: 1 },
+  cactus: { skill: 'farming', level: 1, xp: 120, item: 'cactus_water', qty: 1, respawn: 30, time: 1.4, label: 'Tap Cactus', herb: 1 },
+  wildherb: { skill: 'herblore', level: 1, xp: 150, item: 'herb_guam', qty: 1, respawn: 30, time: 1.4, label: 'Pick Wild Guam', herb: 1 },
+  desertherb: { skill: 'herblore', level: 12, xp: 300, item: 'herb_sunleaf', qty: 1, respawn: 35, time: 1.6, label: 'Pick Sunleaf', herb: 1 },
+  bogherb: { skill: 'herblore', level: 25, xp: 600, item: 'herb_bloodmoss', qty: 1, respawn: 45, time: 1.8, label: 'Pick Bloodmoss <small>(rare)</small>', herb: 1 },
+  snowherb: { skill: 'herblore', level: 18, xp: 450, item: 'herb_frostbloom', qty: 1, respawn: 40, time: 1.6, label: 'Pick Frostbloom', herb: 1 },
 };
 function validWild(x, z, minH = 1.2) {
   if (islandHeight(x, z) < minH) return false;
@@ -486,6 +599,29 @@ export function generateNodes() {
   place('burrow', 6, disc2(-20, 70, 30), 6, 'burrow', validWild);
   place('trail', 4, disc2(60, 30, 28), 7, 'trail', validWild);
   place('nest', 5, disc2(RIDGE.x - 20, RIDGE.z + 10, 40), 7, 'nest', validRidge);
+  // ---- v3 regions (own generator; v1/v2 ids unchanged) ----
+  const rnd3 = mulberry32(3333);
+  const disc3 = (cx, cz, R) => () => { const a = rnd3() * Math.PI * 2, r = Math.sqrt(rnd3()) * R; return { x: cx + Math.cos(a) * r, z: cz + Math.sin(a) * r }; };
+  const inReg = (k, minH = 0.8, maxH = 30) => (x, z) => regionAt(x, z) === k && islandHeight(x, z) > minH && islandHeight(x, z) < maxH && !isSafeZone(zoneAt(x, z)) && !V3_HEARTHS.some((q) => Math.hypot(q.x - x, q.z - z) < 6) && Math.hypot(x - SHRINE.x, z - SHRINE.z) > 8 && Math.hypot(x - PYRAMID.x, z - PYRAMID.z) > 10;
+  const F = REGIONS.frost, D = REGIONS.desert, S = REGIONS.swamp, C = REGIONS.coast;
+  place('pine', 26, disc3(F.x, F.z + 15, 70), 4.5, 'pine', inReg('frost', 1, 20));
+  place('mithril', 6, disc3(F.x + 20, F.z - 5, 35), 4, 'mith', inReg('frost', 2, 26));
+  place('snowherb', 4, disc3(F.x - 25, F.z, 40), 5, 'fbloom', inReg('frost', 1, 20));
+  place('adamant', 5, disc3(D.x + 35, D.z + 5, 30), 4, 'adam', inReg('desert'));
+  place('cactus', 12, disc3(D.x, D.z, 75), 5, 'cactus', inReg('desert'));
+  place('desertherb', 5, disc3(D.x - 20, D.z + 10, 50), 5, 'sunleaf', inReg('desert'));
+  place('palm', 8, disc3(OASIS.x + 14, OASIS.z + 6, 18), 3.5, 'opalm', inReg('desert', 0.4));
+  place('mangrove', 16, disc3(S.x, S.z, 65), 5, 'mang', inReg('swamp', 0.6));
+  place('bogherb', 4, disc3(S.x - 20, S.z + 10, 45), 6, 'bmoss', inReg('swamp', 0.6));
+  place('wildherb', 6, disc3(S.x + 20, S.z - 10, 40), 5, 'guam', inReg('swamp', 0.6));
+  place('wildherb', 5, disc(-40, 40, 40), 6, 'iguam', validWild);
+  place('palm', 12, disc3(C.x, C.z + 10, 55), 4, 'palm', inReg('coast', 0.6));
+  place('nightfish', 0, disc3(0, 0, 1));
+  const edge = (k, angles, prefix, type) => shoreSpots(REGIONS[k].x, REGIONS[k].z, angles, (x, z) => terrainHeight(x, z), REGIONS[k].r * 0.6, REGIONS[k].r * 1.3).forEach((p, i) => nodes.push({ id: `${prefix}_${i}`, type, x: p.x, z: p.z, r: 0 }));
+  edge('frost', [0.4, 2.6, 3.6], 'icefish', 'icefish');
+  edge('coast', [0.3, 0.9, 1.5, 2.2], 'deepsea', 'deepsea');
+  edge('swamp', [2.2, 3.2, 4.1], 'rainfish', 'rainfish');
+  [[-0.7, 'nightfish', 'moon'], [5.0, 'nightfish', 'moon2']].forEach(([a, t, id]) => { const p = shoreSpots(0, 0, [a], (x, z) => isleHeight(x, z), 90, 150)[0]; if (p) nodes.push({ id, type: t, x: p.x, z: p.z, r: 0 }); });
   return (_nodes = nodes);
 }
 
@@ -501,7 +637,31 @@ export const ENEMY_TYPES = {
   hollowed: { name: 'Hollowed Miner', hp: 7, speed: 1.8, aggro: 10, range: 2.7, tell: 1.0, dmg: 2, cool: 1.9, xp: 380, radius: 0.8, respawn: 40, leash: 24 },
   shellback: { name: 'Shellback Beetle', hp: 8, speed: 2.0, aggro: 12, range: 8, tell: 1.0, dmg: 2, cool: 2.8, xp: 600, radius: 1.1, respawn: 0, leash: 30, armoured: 1 },
   magmaw: { name: 'Magmaw, the Furnace Worm', hp: 24, speed: 0, aggro: 18, range: 12, tell: 0.9, dmg: 2, cool: 1, xp: 4000, radius: 2.0, respawn: 0, leash: 99, boss: true },
+  // ---- v3: new regions (ai = behaviour borrowed from a v2 enemy, look/tint/scale = visuals) ----
+  icewolf: { name: 'Ice Wolf', hp: 7, speed: 4.4, aggro: 14, range: 3.0, tell: 0.55, dmg: 2, cool: 1.4, xp: 520, radius: 0.8, respawn: 30, leash: 30, ai: 'hound', tint: 0xd8ecff, slow: 1 },
+  frosttroll: { name: 'Frost Troll (elite)', hp: 22, speed: 2.0, aggro: 12, range: 3.2, tell: 1.0, dmg: 3, cool: 2.0, xp: 1400, radius: 1.3, respawn: 60, leash: 26, ai: 'grubkin', tint: 0x9ac0d8, scale: 1.8, elite: 1 },
+  yeti: { name: 'Night Yeti', hp: 12, speed: 3.0, aggro: 13, range: 2.8, tell: 0.8, dmg: 3, cool: 1.7, xp: 900, radius: 1.1, respawn: 40, leash: 28, ai: 'grubkin', tint: 0xf4f8ff, scale: 1.45, night: 1 },
+  frostwyrm: { name: 'The Frost Wyrm', hp: 60, speed: 2.2, aggro: 22, range: 9, tell: 1.1, dmg: 3, cool: 1.2, xp: 9000, radius: 2.2, respawn: 300, leash: 40, ai: 'phased', look: 'serpent', tint: 0xa8d8ff, boss: true, world: 1,
+    moves: [['slam', 'volley'], ['slam', 'nova', 'volley'], ['burrow', 'nova', 'volley', 'slam']], proj: 0x9ad8ff, slow: 1 },
+  scorpion: { name: 'Dune Scorpion', hp: 8, speed: 2.6, aggro: 13, range: 8, tell: 0.9, dmg: 2, cool: 2.4, xp: 640, radius: 1.0, respawn: 30, leash: 30, ai: 'boar', tint: 0xc89a50, scale: 0.85, poison: 1 },
+  sandwraith: { name: 'Sand Wraith', hp: 7, speed: 2.8, aggro: 15, range: 10, tell: 0.75, dmg: 2, cool: 2.0, xp: 700, radius: 0.6, respawn: 30, leash: 26, ai: 'imp', tint: 0xe8d090 },
+  sandworm: { name: 'Sunscar Sandworm', hp: 64, speed: 3.0, aggro: 22, range: 10, tell: 1.1, dmg: 3, cool: 1.2, xp: 10000, radius: 2.2, respawn: 300, leash: 40, ai: 'phased', look: 'serpent', tint: 0xd8b070, boss: true, world: 1,
+    moves: [['burrow', 'slam'], ['burrow', 'volley', 'slam'], ['burrow', 'nova', 'volley']], proj: 0xe8c070 },
+  mummy: { name: 'Pyramid Mummy', hp: 9, speed: 1.9, aggro: 10, range: 2.7, tell: 0.9, dmg: 2, cool: 1.8, xp: 600, radius: 0.8, respawn: 0, leash: 24, ai: 'hollowed', tint: 0xe8dcb0 },
+  bogwitch: { name: 'Bog Witch', hp: 9, speed: 2.4, aggro: 15, range: 10, tell: 0.8, dmg: 2, cool: 2.2, xp: 760, radius: 0.7, respawn: 35, leash: 26, ai: 'imp', tint: 0x7a50a0, poison: 1 },
+  frog: { name: 'Mire Frog', hp: 5, speed: 3.2, aggro: 10, range: 2.6, tell: 0.6, dmg: 1, cool: 1.4, xp: 300, radius: 0.7, respawn: 25, leash: 22, ai: 'mossling', tint: 0x90c040, poison: 1 },
+  pirate: { name: 'Starfall Pirate', hp: 10, speed: 2.8, aggro: 13, range: 2.6, tell: 0.8, dmg: 2, cool: 1.6, xp: 700, radius: 0.8, respawn: 35, leash: 26, ai: 'grubkin', tint: 0xa05040 },
+  crab: { name: 'Shore Crab', hp: 6, speed: 2.4, aggro: 9, range: 7, tell: 0.9, dmg: 1, cool: 2.4, xp: 340, radius: 0.8, respawn: 25, leash: 22, ai: 'boar', tint: 0xe06030, scale: 0.7 },
+  shade: { name: 'Night Shade', hp: 6, speed: 4.0, aggro: 14, range: 3.0, tell: 0.6, dmg: 2, cool: 1.5, xp: 450, radius: 0.7, respawn: 40, leash: 30, ai: 'hound', tint: 0x403060, night: 1 },
+  // ---- v3: the Drowned Belfry ----
+  drowned: { name: 'Drowned Bellringer', hp: 8, speed: 2.0, aggro: 11, range: 2.7, tell: 0.9, dmg: 2, cool: 1.7, xp: 650, radius: 0.8, respawn: 0, leash: 24, ai: 'hollowed', tint: 0x5aa0a0 },
+  inkwisp: { name: 'Ink Wisp', hp: 5, speed: 3.0, aggro: 14, range: 10, tell: 0.7, dmg: 2, cool: 1.9, xp: 600, radius: 0.6, respawn: 0, leash: 24, ai: 'imp', tint: 0x303050 },
+  bellkeeper: { name: 'The Bellkeeper', hp: 30, speed: 2.0, aggro: 18, range: 4, tell: 1.0, dmg: 2, cool: 1.3, xp: 3000, radius: 1.5, respawn: 0, leash: 40, ai: 'phased', look: 'warden', tint: 0x6ab0b0, boss: true,
+    moves: [['slam', 'nova'], ['slam', 'nova', 'volley'], ['nova', 'volley', 'slam']], proj: 0x80e0e0 },
+  vael: { name: 'Vael the Unwriter', hp: 48, speed: 2.6, aggro: 24, range: 9, tell: 1.2, dmg: 3, cool: 1.1, xp: 12000, radius: 1.2, respawn: 0, leash: 60, ai: 'phased', look: 'vael', boss: true, finale: 1,
+    moves: [['volley', 'lines'], ['lines', 'nova', 'summon', 'volley'], ['lines', 'nova', 'volley', 'summon', 'lines']], proj: 0xc080ff, minion: 'inkwisp', unblockLines: 1 },
 };
+ENEMY_TYPES.player = { name: 'Player', hp: 20, speed: 0, aggro: 0, range: 0, tell: 0, dmg: 0, cool: 1, xp: 0, radius: 0.5, respawn: 0, leash: 0, pvp: 1 };
 let _spawns = null;
 export function generateEnemySpawns() {
   if (_spawns) return _spawns;
@@ -535,6 +695,26 @@ export function generateEnemySpawns() {
   ridge('hound', 5, RIDGE.x, RIDGE.z, 55);
   ridge('imp', 4, RIDGE.x + 10, RIDGE.z, 40);
   ridge('hollowed', 4, FADE_PATCHES[0].x + 4, FADE_PATCHES[0].z - 4, 20);
+  // v3: new regions (separate seed, appended so v2 ids are unchanged)
+  const rnd3 = mulberry32(3003);
+  const reg = (type, count, k, cx, cz, R, minH = 0.6, maxH = 40) => {
+    let n = 0, tries = 0;
+    while (n < count && tries++ < 6000) {
+      const a = rnd3() * Math.PI * 2, r = Math.sqrt(rnd3()) * R, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      const h = islandHeight(x, z); if (regionAt(x, z) !== k || h < minH || h > maxH || isSafeZone(zoneAt(x, z))) continue;
+      if (V3_HEARTHS.some((q) => Math.hypot(q.x - x, q.z - z) < 14)) continue;
+      if (out.some((o) => Math.hypot(o.x - x, o.z - z) < 7)) continue;
+      out.push({ id: `${type}_${n}`, type, x: +x.toFixed(2), z: +z.toFixed(2) }); n++;
+    }
+  };
+  const F = REGIONS.frost, D = REGIONS.desert, S = REGIONS.swamp, C = REGIONS.coast;
+  reg('icewolf', 5, 'frost', F.x - 10, F.z + 20, 55, 1, 22); reg('frosttroll', 2, 'frost', F.x + 30, F.z + 10, 25, 1, 22); reg('yeti', 3, 'frost', F.x - 30, F.z - 10, 35, 1, 22);
+  out.push({ id: 'frostwyrm_0', type: 'frostwyrm', x: WYRM_LAIR.x, z: WYRM_LAIR.z });
+  reg('scorpion', 5, 'desert', D.x, D.z + 10, 70); reg('sandwraith', 4, 'desert', D.x + 20, D.z + 30, 50);
+  out.push({ id: 'sandworm_0', type: 'sandworm', x: SANDWORM_PIT.x, z: SANDWORM_PIT.z });
+  reg('bogwitch', 4, 'swamp', S.x - 10, S.z, 55, 0.3); reg('frog', 6, 'swamp', S.x, S.z, 60, 0.2);
+  reg('pirate', 4, 'coast', C.x + 10, C.z + 25, 45); reg('crab', 5, 'coast', C.x, C.z + 10, 60, 0.4, 3);
+  ring('shade', 4, 40, 80);
   return (_spawns = out);
 }
 
@@ -601,7 +781,11 @@ export class EnemySim {
         const d = Math.hypot(p.x - e.x, p.z - e.z);
         if (d < td) { td = d; tgt = p; }
       }
+      if (T.night && this.isNight && !this.isNight() && e.state === 'idle') { e.hidden = true; continue; } // night-only enemies sleep by day
+      e.hidden = false;
       if (e.type === 'magmaw') { this.updateMagmaw(e, T, dt, tgt, td, ev); continue; }
+      if (T.ai === 'phased') { this.updatePhased(e, T, dt, tgt, td, ev); continue; }
+      const AI = T.ai || e.type;
       const leash = Math.hypot(e.x - e.sx, e.z - e.sz);
       const fwd = () => { e.dx = Math.sin(e.ry); e.dz = Math.cos(e.ry); };
       switch (e.state) {
@@ -622,15 +806,15 @@ export class EnemySim {
             e.kind = e.type === 'warden' ? (td < 2.6 && this.rand() < 0.45 ? 'sweep' : 'slam') : 'a';
             this.set(e, 'tell'); break;
           }
-          if (e.type === 'imp') { // keep a safe distance, sidestep
+          if (AI === 'imp') { // keep a safe distance, sidestep
             if (td < 5) this.move(e, -Math.sin(e.ry), -Math.cos(e.ry), T.speed * dt);
             else if (td > 8) this.moveToward(e, tgt.x, tgt.z, T.speed, dt);
             else { const s = Math.sin(e.atk * 2.1 + e.st) > 0 ? 1 : -1; this.move(e, Math.cos(e.ry) * s, -Math.sin(e.ry) * s, T.speed * 0.5 * dt); }
             break;
           }
-          const want = e.type === 'boar' || e.type === 'shellback' ? 5 : T.range * 0.7;
+          const want = AI === 'boar' || AI === 'shellback' ? 5 : T.range * 0.7;
           if (td > want) this.moveToward(e, tgt.x, tgt.z, T.speed, dt);
-          else if (e.type !== 'boar' && e.type !== 'shellback') { // circle-strafe a little while waiting
+          else if (AI !== 'boar' && AI !== 'shellback') { // circle-strafe a little while waiting
             const s = Math.sin(e.atk * 1.7) > 0 ? 1 : -1; this.move(e, Math.cos(e.ry) * s, -Math.sin(e.ry) * s, T.speed * 0.4 * dt);
           }
           break;
@@ -640,17 +824,17 @@ export class EnemySim {
           if (e.st >= (e.kind === 'sweep' ? 0.8 : T.tell)) this.set(e, 'attack');
           break;
         case 'attack': {
-          const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
-          if (e.type === 'mossling' || e.type === 'hound') {
-            const lunge = e.type === 'hound' ? 10 : 7;
+          const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, slow: T.slow ? 1 : 0, poison: T.poison ? 1 : 0, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
+          if (AI === 'mossling' || AI === 'hound') {
+            const lunge = AI === 'hound' ? 10 : 7;
             if (e.st < 0.35) this.move(e, e.dx, e.dz, lunge * dt);
             if (e.st >= 0.12 && e.n !== e.atk) { e.n = e.atk; hit(e.x + e.dx * 0.6, e.z + e.dz * 0.6, 1.3); }
             if (e.st > 0.5) { e.cd = T.cool; this.set(e, 'recover'); }
-          } else if (e.type === 'grubkin' || e.type === 'hollowed') {
+          } else if (AI === 'grubkin' || AI === 'hollowed') {
             if (e.st < 0.15) this.move(e, e.dx, e.dz, 4 * dt);
             if (e.st >= 0.15 && e.n !== e.atk) { e.n = e.atk; hit(e.x + e.dx * 1.5, e.z + e.dz * 1.5, 1.5); }
             if (e.st > 0.55) { e.cd = T.cool; this.set(e, 'recover'); }
-          } else if (e.type === 'imp') {
+          } else if (AI === 'imp') {
             if (e.n !== e.atk) {
               e.n = e.atk;
               this.proj.push({ id: e.id + ':fb', n: ++this.projN, x: e.x + e.dx * 0.8, z: e.z + e.dz * 0.8, dx: e.dx, dz: e.dz, t: 0, dmg: T.dmg });
@@ -663,8 +847,8 @@ export class EnemySim {
               }
               this.set(e, 'recover');
             }
-          } else if (e.type === 'boar' || e.type === 'shellback') {
-            const moved = this.move(e, e.dx, e.dz, (e.type === 'shellback' ? 10 : 12) * dt);
+          } else if (AI === 'boar' || AI === 'shellback') {
+            const moved = this.move(e, e.dx, e.dz, (AI === 'shellback' ? 10 : 12) * dt);
             hit(e.x + e.dx * 0.8, e.z + e.dz * 0.8, 1.4);
             if (e.st > 0.9 || !moved) { e.cd = T.cool; this.set(e, moved ? 'recover' : 'stuck'); }
           } else if (e.type === 'warden') {
@@ -679,7 +863,7 @@ export class EnemySim {
           break;
         }
         case 'stuck': // vulnerable window (warden after slam, boar after hitting a wall)
-          if (e.st > (e.type === 'warden' ? 1.9 : 1.2)) this.set(e, 'recover');
+          if (e.st > (AI === 'warden' ? 1.9 : 1.2)) this.set(e, 'recover');
           break;
         case 'flipped': // shellback knocked onto its back by a bomb
           if (e.st > 5) this.set(e, 'recover');
@@ -694,6 +878,55 @@ export class EnemySim {
       }
     }
     return ev;
+  }
+  // v3 generic boss: phases at 2/3 and 1/3 HP, each with a move list; every move is telegraphed ('tell' + kind),
+  // followed by a short vulnerable 'stuck' window. Kinds: slam (ring in front), nova (ring around itself), volley
+  // (fan of projectiles), lines (Vael: ink lines along the ground, unblockable), summon (minions), burrow (dive + erupt).
+  updatePhased(e, T, dt, tgt, td, ev) {
+    const ph = e.hp <= e.max / 3 ? 3 : e.hp <= e.max * 2 / 3 ? 2 : 1;
+    if (ph !== e.phase) { e.phase = ph; ev.push({ t: 'phase', id: e.id, phase: ph, boss: e.type }); }
+    const face = () => { if (tgt) e.ry = Math.atan2(tgt.x - e.x, tgt.z - e.z); e.dx = Math.sin(e.ry); e.dz = Math.cos(e.ry); };
+    const hit = (ox, oz, r, extra = {}) => ev.push({ t: 'hit', id: e.id, atk: e.atk, x: +ox.toFixed(2), z: +oz.toFixed(2), r, dmg: T.dmg, slow: T.slow ? 1 : 0, sx: +e.x.toFixed(2), sz: +e.z.toFixed(2), ...extra });
+    const leash = Math.hypot(e.x - e.sx, e.z - e.sz);
+    const tellT = T.tell * (ph === 3 ? 0.8 : 1);
+    switch (e.state) {
+      case 'idle': if (tgt && td < T.aggro) { this.set(e, 'chase'); ev.push({ t: 'roar', id: e.id, boss: e.type }); } break;
+      case 'return': if (this.moveToward(e, e.sx, e.sz, T.speed * 1.5, dt) < 1) { e.hp = e.max; e.phase = 1; this.set(e, 'idle'); } break;
+      case 'chase':
+        if (!tgt || leash > T.leash || td > T.aggro * 2) { this.set(e, 'return'); break; }
+        face();
+        if (e.cd <= 0) {
+          const list = T.moves[ph - 1]; e.mi = (e.mi || 0) + 1; e.kind = list[e.mi % list.length]; e.atk++;
+          if (e.kind === 'summon' && [...this.enemies.values()].filter((m) => m.alive && m.id.startsWith(e.id + '_s')).length >= 3) e.kind = 'volley';
+          if (e.kind === 'burrow') { this.set(e, 'submerged'); e.bt = tgt ? { x: tgt.x, z: tgt.z } : { x: e.x, z: e.z }; ev.push({ t: 'burrow', id: e.id }); break; }
+          if (e.kind === 'lines') e.lines = [0, 1, 2].map((i) => e.ry + (i - 1) * (ph === 3 ? 0.55 : 0.4));
+          this.set(e, 'tell'); break;
+        }
+        if (td > (T.range * 0.55)) this.moveToward(e, tgt.x, tgt.z, T.speed, dt);
+        break;
+      case 'tell':
+        if (e.st < tellT * 0.5 && e.kind !== 'lines') face();
+        if (e.st >= tellT) this.set(e, 'attack');
+        break;
+      case 'attack':
+        if (e.n !== e.atk) {
+          e.n = e.atk;
+          if (e.kind === 'slam') hit(e.x + e.dx * 2.6, e.z + e.dz * 2.6, 2.8, { slam: 1 });
+          else if (e.kind === 'nova') hit(e.x, e.z, 5.2, { slam: 1, nova: 1 });
+          else if (e.kind === 'volley') { const n = ph === 1 ? 3 : 5; for (let i = 0; i < n; i++) { const a = e.ry + (i - (n - 1) / 2) * 0.32; this.proj.push({ id: e.id + ':v' + i, n: ++this.projN, x: e.x + Math.sin(a), z: e.z + Math.cos(a), dx: Math.sin(a), dz: Math.cos(a), t: 0, dmg: T.dmg - 1 || 1 }); } ev.push({ t: 'fire', id: e.id }); }
+          else if (e.kind === 'lines') { for (const a of e.lines || [e.ry]) for (let d = 2; d <= 14; d += 2) hit(e.x + Math.sin(a) * d, e.z + Math.cos(a) * d, 1.2, { unblockable: T.unblockLines ? 1 : 0, ink: 1 }); }
+          else if (e.kind === 'summon') { for (let i = 0; i < 2; i++) { const a = this.rand() * 6.28, id = `${e.id}_s${++e.sn || (e.sn = 1)}`; const m = this.make({ id, type: T.minion || 'inkwisp', x: e.x + Math.cos(a) * 4, z: e.z + Math.sin(a) * 4 }); this.enemies.set(id, m); } ev.push({ t: 'summon', id: e.id }); }
+        }
+        if (e.st > 0.5) { e.cd = T.cool * (ph === 3 ? 0.75 : 1); this.set(e, e.kind === 'summon' ? 'chase' : 'stuck'); }
+        break;
+      case 'stuck': if (e.st > 1.2) this.set(e, 'chase'); break;
+      case 'submerged': // burrowed: untouchable, a shadow tracks you, then it erupts
+        if (tgt && e.st < 1.1) e.bt = { x: tgt.x, z: tgt.z };
+        if (e.st > 1.6) { if (this.canStand(e.bt.x, e.bt.z)) { e.x = e.bt.x; e.z = e.bt.z; } hit(e.x, e.z, 3.0, { erupt: 1, unblockable: 1 }); this.set(e, 'stuck'); e.cd = T.cool; }
+        break;
+      case 'dead': break;
+      default: this.set(e, 'chase');
+    }
   }
   // Magmaw: surfaces at a lava spot, inhales (bomb its mouth!), breathes fire, sinks. Stunned = molten heart exposed.
   updateMagmaw(e, T, dt, tgt, td, ev) {
@@ -729,6 +962,14 @@ export class EnemySim {
     if (!e || !e.alive) return { ok: false };
     const T = ENEMY_TYPES[e.type];
     let dx = e.x - fromX, dz = e.z - fromZ; const d = Math.hypot(dx, dz) || 1; dx /= d; dz /= d;
+    if (T.ai === 'phased') {
+      if (e.state === 'submerged' || e.state === 'idle' && T.finale && !opts.force) return { ok: true, blocked: true, hp: e.hp };
+      if (e.state === 'stuck') dmg = Math.ceil(dmg * 1.5); // punish window
+      e.hp = Math.max(0, e.hp - dmg);
+      if (e.state === 'idle') this.set(e, 'chase');
+      if (e.hp <= 0) { e.alive = false; this.set(e, 'dead'); for (const m of this.enemies.values()) if (m.id.startsWith(e.id + '_s')) { m.alive = false; this.set(m, 'dead'); } return { ok: true, killed: true, hp: 0, xp: T.xp }; }
+      return { ok: true, hp: e.hp };
+    }
     if (e.type === 'warden' && e.state !== 'stuck' && !opts.bomb) {
       // frontal armour: only hits from behind land unless he is stuck after a slam
       const fx = Math.sin(e.ry), fz = Math.cos(e.ry);
@@ -798,5 +1039,153 @@ export const SKILL_COLORS = {
   combat: [0xb02a2a, 0xffd040], archery: [0x2f8f3a, 0xe8f0c0], magic: [0x5a2a9a, 0x80e0ff], woodcutting: [0x5a7a2a, 0xc8a060],
   mining: [0x4a5058, 0xd0d8e0], fishing: [0x2a5fb0, 0xa0e0ff], hunting: [0x6a4a2a, 0xe0c090], smithing: [0x5a5a60, 0xff8a20],
   cooking: [0xffffff, 0xb02a2a], crafting: [0x8a5a9a, 0xffe060], fletching: [0x2a7a6a, 0xffffff], runemaking: [0xd08a1c, 0x3a3f48],
+  farming: [0x4a8a2a, 0xf0e070], herblore: [0x2a8a6a, 0xe060c0],
 };
 export const TOTAL_MILESTONE = 50;
+
+// ======================================================================================================
+// v3.0 data: items, gear, recipes, loot, shops, potions, farming, mounts, tasks, achievements, market
+// ======================================================================================================
+Object.assign(SWORDS, { mithril: { name: 'Mithril Sword', dmg: 5, color: 0x7aa8ff }, adamant: { name: 'Adamant Sword', dmg: 6, color: 0x3a9a6a } });
+Object.assign(ITEMS, {
+  mithril_ore: { name: 'Mithril Ore', icon: '🔵', v: 30 }, adamant_ore: { name: 'Adamantite Ore', icon: '🟢', v: 50 },
+  mithril_bar: { name: 'Mithril Bar', icon: '🟦', v: 80 }, adamant_bar: { name: 'Adamant Bar', icon: '🟩', v: 130 },
+  raw_icefish: { name: 'Raw Icefish', icon: '🐟', v: 14 }, icefish: { name: 'Grilled Icefish', icon: '🍣', v: 30, heal: 7, warm: 1 },
+  raw_moonfish: { name: 'Raw Moonfish', icon: '🌙', v: 20 }, moonfish: { name: 'Moonfish Fillet', icon: '🍥', v: 40, heal: 8 },
+  raw_rainbow: { name: 'Raw Rainbow Trout', icon: '🌈', v: 16 }, rainbow: { name: 'Rainbow Trout', icon: '🐠', v: 32, heal: 6 },
+  raw_swordfish: { name: 'Raw Swordfish', icon: '🗡', v: 24 }, swordfish: { name: 'Swordfish Steak', icon: '🍱', v: 50, heal: 10 },
+  cactus_water: { name: 'Cactus Water', icon: '🌵', v: 4 }, waterskin: { name: 'Waterskin', icon: '💧', v: 12, cool: 1 },
+  warm_cloak: { name: 'Fur Cloak (warm)', icon: '🧥', v: 60 },
+  herb_guam: { name: 'Guam Leaf', icon: '🌿', v: 8 }, herb_sunleaf: { name: 'Sunleaf', icon: '🌼', v: 16 }, herb_frostbloom: { name: 'Frostbloom', icon: '❄', v: 18 }, herb_bloodmoss: { name: 'Bloodmoss', icon: '🩸', v: 40 },
+  herb_marrentill: { name: 'Marrentill', icon: '🍀', v: 10 }, herb_ranarr: { name: 'Ranarr Weed', icon: '🌱', v: 30 },
+  vial: { name: 'Vial of Water', icon: '🧪', v: 3 },
+  seed_marrentill: { name: 'Marrentill Seed', icon: '🫘', v: 4, seed: 1 }, seed_ranarr: { name: 'Ranarr Seed', icon: '🫘', v: 15, seed: 1 }, seed_guam: { name: 'Guam Seed', icon: '🫘', v: 3, seed: 1 },
+  seed_potato: { name: 'Potato Seed', icon: '🥔', v: 2, seed: 1 }, seed_pumpkin: { name: 'Pumpkin Seed', icon: '🎃', v: 6, seed: 1 }, sapling_apple: { name: 'Apple Sapling', icon: '🌳', v: 40, seed: 1 }, sapling_ember: { name: 'Emberwood Sapling', icon: '🌲', v: 90, seed: 1 },
+  potato: { name: 'Potato', icon: '🥔', v: 4, heal: 1 }, pumpkin: { name: 'Pumpkin', icon: '🎃', v: 10, heal: 3 }, apple: { name: 'Apple', icon: '🍎', v: 6, heal: 2 },
+  compost: { name: 'Compost', icon: '💩', v: 3 },
+  potion_health: { name: 'Health Potion', icon: '❤️', v: 30, potion: 'health' }, potion_stamina: { name: 'Stamina Potion', icon: '💛', v: 30, potion: 'stamina' },
+  potion_fade: { name: 'Fade-resist Potion', icon: '🌫', v: 45, potion: 'fade' }, potion_attack: { name: 'Attack Potion', icon: '⚔', v: 50, potion: 'attack' },
+  potion_defence: { name: 'Defence Potion', icon: '🛡', v: 50, potion: 'defence' }, potion_antipoison: { name: 'Antipoison', icon: '💚', v: 35, potion: 'antipoison' },
+  potion_warmth: { name: 'Warmth Potion', icon: '🔥', v: 35, potion: 'warmth' }, potion_cooling: { name: 'Cooling Potion', icon: '🧊', v: 35, potion: 'cooling' },
+  bellrope: { name: 'Bell-rope Fibre', icon: '🪢', v: 20 }, ink_shard: { name: 'Unwritten Ink', icon: '🖋', v: 60 }, wyrm_scale: { name: 'Frost Wyrm Scale', icon: '🧊', v: 400 }, worm_tooth: { name: 'Sandworm Tooth', icon: '🦷', v: 400 },
+  pirate_map: { name: 'Torn Pirate Map', icon: '🗺', v: 0, quest: 1 }, frost_relic: { name: 'Shrine Relic', icon: '🔷', v: 0, quest: 1 }, sun_idol: { name: 'Sun Idol', icon: '🏺', v: 0, quest: 1 }, witch_charm: { name: "Witch's Charm", icon: '🧿', v: 0, quest: 1 },
+  vael_quill: { name: "Vael's Broken Quill", icon: '🪶', v: 0, quest: 1 }, hookshot: { name: 'Hookshot', icon: '⛓', v: 0, quest: 1 },
+  arena_token: { name: 'Arena Token', icon: '🎟', v: 0, untradeable: 1 }, wolf_treat: { name: 'Wolf Treat', icon: '🍖', v: 25 }, saddle: { name: 'Saddle', icon: '🐎', v: 0, quest: 1 },
+});
+Object.assign(GEAR, {
+  mithril_sword: { slot: 'weapon', name: 'Mithril Sword', atk: 5, sword: 'mithril', icon: '⚔', v: 300, req: 30 },
+  adamant_sword: { slot: 'weapon', name: 'Adamant Sword', atk: 6, sword: 'adamant', icon: '⚔', v: 520, req: 40 },
+  mithril_shield: { slot: 'shield', name: 'Mithril Shield', def: 4, color: 0x7aa8ff, icon: '🛡', v: 260, req: 30 },
+  adamant_shield: { slot: 'shield', name: 'Adamant Shield', def: 5, color: 0x3a9a6a, icon: '🛡', v: 450, req: 40 },
+  mithril_helm: { slot: 'head', name: 'Mithril Helm', def: 4, color: 0x7aa8ff, icon: '⛑', v: 200, req: 30 },
+  mithril_body: { slot: 'body', name: 'Mithril Platebody', def: 8, color: 0x7aa8ff, icon: '🥋', v: 420, req: 30 },
+  mithril_legs: { slot: 'legs', name: 'Mithril Platelegs', def: 6, color: 0x6a98ef, icon: '👖', v: 300, req: 30 },
+  adamant_helm: { slot: 'head', name: 'Adamant Helm', def: 5, color: 0x3a9a6a, icon: '⛑', v: 340, req: 40 },
+  adamant_body: { slot: 'body', name: 'Adamant Platebody', def: 10, color: 0x3a9a6a, icon: '🥋', v: 700, req: 40 },
+  adamant_legs: { slot: 'legs', name: 'Adamant Platelegs', def: 8, color: 0x2a8a5a, icon: '👖', v: 500, req: 40 },
+  fur_hood: { slot: 'head', name: 'Fur Hood (warm)', def: 1, color: 0xe8e0d0, icon: '🧣', v: 60, req: 1, warm: 1 },
+  desert_wrap: { slot: 'head', name: 'Desert Wrap (cool)', def: 1, color: 0xe8d0a0, icon: '👳', v: 60, req: 1, cool: 1 },
+});
+for (const [k, g] of Object.entries(GEAR)) if (!ITEMS[k]) ITEMS[k] = { name: g.name, icon: g.icon, v: g.v, gear: 1 };
+RECIPES.push(
+  R('mithril_bar', 'furnace', 'Smelt Mithril Bar', { mithril_ore: 1, coal: 3 }, { mithril_bar: 1 }, 30, 900),
+  R('adamant_bar', 'furnace', 'Smelt Adamant Bar', { adamant_ore: 1, coal: 4 }, { adamant_bar: 1 }, 40, 1400),
+  R('mithril_sword', 'anvil', 'Forge Mithril Sword', { mithril_bar: 2 }, { mithril_sword: 1 }, 31, 1800, { sword: 'mithril' }),
+  R('mithril_shield', 'anvil', 'Forge Mithril Shield', { mithril_bar: 2 }, { mithril_shield: 1 }, 32, 1800),
+  R('mithril_helm', 'anvil', 'Forge Mithril Helm', { mithril_bar: 1 }, { mithril_helm: 1 }, 32, 900),
+  R('mithril_legs', 'anvil', 'Forge Mithril Platelegs', { mithril_bar: 2 }, { mithril_legs: 1 }, 33, 1800),
+  R('mithril_body', 'anvil', 'Forge Mithril Platebody', { mithril_bar: 3 }, { mithril_body: 1 }, 35, 2700),
+  R('adamant_sword', 'anvil', 'Forge Adamant Sword', { adamant_bar: 2 }, { adamant_sword: 1 }, 41, 2800, { sword: 'adamant' }),
+  R('adamant_shield', 'anvil', 'Forge Adamant Shield', { adamant_bar: 2 }, { adamant_shield: 1 }, 42, 2800),
+  R('adamant_helm', 'anvil', 'Forge Adamant Helm', { adamant_bar: 1 }, { adamant_helm: 1 }, 42, 1400),
+  R('adamant_legs', 'anvil', 'Forge Adamant Platelegs', { adamant_bar: 2 }, { adamant_legs: 1 }, 43, 2800),
+  R('adamant_body', 'anvil', 'Forge Adamant Platebody', { adamant_bar: 3 }, { adamant_body: 1 }, 45, 4200),
+  R('icefish', 'range', 'Grill Icefish', { raw_icefish: 1 }, { icefish: 1 }, 20, 500, { burn: 0.3 }),
+  R('moonfish', 'range', 'Cook Moonfish', { raw_moonfish: 1 }, { moonfish: 1 }, 22, 560, { burn: 0.3 }),
+  R('rainbow', 'range', 'Cook Rainbow Trout', { raw_rainbow: 1 }, { rainbow: 1 }, 14, 420, { burn: 0.3 }),
+  R('swordfish', 'range', 'Cook Swordfish', { raw_swordfish: 1 }, { swordfish: 1 }, 30, 700, { burn: 0.35 }),
+  R('fur_hood', 'workbench', 'Sew Fur Hood (warm)', { hide: 3, leather: 1 }, { fur_hood: 1 }, 8, 300),
+  R('desert_wrap', 'workbench', 'Wrap Desert Headscarf (cool)', { leather: 1, cactus_water: 2 }, { desert_wrap: 1 }, 8, 300),
+  R('waterskin', 'workbench', 'Fill Waterskin', { leather: 1, cactus_water: 2 }, { waterskin: 2 }, 3, 120),
+  R('vial', 'workbench', 'Blow Vials of Water ×3', { stone: 1 }, { vial: 3 }, 1, 40),
+);
+// Herblore: mix at any workbench, campfire or the oasis/port apothecary (station 'herb')
+export const POTIONS = {
+  health: { item: 'potion_health', level: 1, input: { vial: 1, herb_guam: 1 }, xp: 250, desc: 'Restores 6 hearts' },
+  stamina: { item: 'potion_stamina', level: 5, input: { vial: 1, herb_marrentill: 1 }, xp: 350, desc: 'Endless stamina for 60 s' },
+  antipoison: { item: 'potion_antipoison', level: 10, input: { vial: 1, herb_marrentill: 1, cactus_water: 1 }, xp: 450, desc: 'Cures poison, immune 90 s' },
+  attack: { item: 'potion_attack', level: 15, input: { vial: 1, herb_sunleaf: 1 }, xp: 600, desc: '+1 attack for 90 s' },
+  warmth: { item: 'potion_warmth', level: 15, input: { vial: 1, herb_frostbloom: 1, coal: 1 }, xp: 600, desc: 'Keeps the Cold away for 3 min' },
+  cooling: { item: 'potion_cooling', level: 15, input: { vial: 1, cactus_water: 2 }, xp: 600, desc: 'Keeps the Heat away for 3 min' },
+  defence: { item: 'potion_defence', level: 20, input: { vial: 1, herb_ranarr: 1 }, xp: 800, desc: '+2 defence for 90 s' },
+  fade: { item: 'potion_fade', level: 30, input: { vial: 1, herb_bloodmoss: 1, fade_rune: 1 }, xp: 1300, desc: 'Halves Fade build-up for 3 min' },
+};
+for (const [k, P] of Object.entries(POTIONS)) RECIPES.push(R(P.item, 'workbench', `Mix ${ITEMS[P.item].name}`, P.input, { [P.item]: 1 }, P.level, P.xp, { skill: 'herblore' }));
+// Farming: patches on the home plot. Growth runs in real time (Date.now), even while offline.
+export const CROPS = {
+  seed_guam: { patch: 'herb', name: 'Guam', mins: 4, out: ['herb_guam', 3, 5], level: 1, xp: 200 },
+  seed_marrentill: { patch: 'herb', name: 'Marrentill', mins: 6, out: ['herb_marrentill', 3, 5], level: 5, xp: 320 },
+  seed_ranarr: { patch: 'herb', name: 'Ranarr', mins: 12, out: ['herb_ranarr', 2, 4], level: 20, xp: 900 },
+  seed_potato: { patch: 'crop', name: 'Potatoes', mins: 3, out: ['potato', 4, 8], level: 1, xp: 150 },
+  seed_pumpkin: { patch: 'crop', name: 'Pumpkins', mins: 8, out: ['pumpkin', 2, 4], level: 10, xp: 450 },
+  sapling_apple: { patch: 'tree', name: 'Apple tree', mins: 20, out: ['apple', 6, 10], level: 8, xp: 1200 },
+  sapling_ember: { patch: 'tree', name: 'Emberwood tree', mins: 40, out: ['log', 12, 18], level: 25, xp: 3000 },
+};
+export const PATCHES = [{ id: 'herb1', kind: 'herb', dx: 1, dz: 1 }, { id: 'herb2', kind: 'herb', dx: 2.5, dz: 1 }, { id: 'crop1', kind: 'crop', dx: 1, dz: 3 }, { id: 'crop2', kind: 'crop', dx: 2.5, dz: 3 }, { id: 'tree1', kind: 'tree', dx: 4.5, dz: 2 }];
+// Mounts
+export const MOUNTS = {
+  wolf: { name: 'Ash-wolf', icon: '🐺', speed: 1.75, req: { hunting: 20 }, how: 'Tame a wild ash-wolf with a Wolf Treat (Hunting 20)' },
+  horse: { name: 'Horse', icon: '🐎', speed: 1.6, cost: 1500, how: 'Buy from the Oakhollow stable (1,500 coins)' },
+};
+export const STABLE = { x: -16, z: 2 };
+export const ASHWOLF_DEN = { x: RIDGE.x - 40, z: RIDGE.z + 40 };
+export const LOOT3 = {
+  icewolf: { gold: [5, 10], items: [['hide', 0.7, 1], ['raw_meat', 0.5, 1]] },
+  frosttroll: { gold: [20, 40], items: [['mithril_ore', 0.6, 2], ['herb_frostbloom', 0.4, 1], ['uncut_diamond', 0.05, 1]] },
+  yeti: { gold: [10, 20], items: [['hide', 1, 2], ['warm_cloak', 0.05, 1]] },
+  frostwyrm: { gold: [400, 400], items: [['wyrm_scale', 1, 1], ['mithril_bar', 1, 3], ['uncut_diamond', 1, 2]], rare: ['wyrm_scale'] },
+  scorpion: { gold: [6, 12], items: [['herb_sunleaf', 0.2, 1]] },
+  sandwraith: { gold: [8, 14], items: [['air_rune', 0.5, 4], ['seed_ranarr', 0.05, 1]], rare: ['seed_ranarr'] },
+  sandworm: { gold: [400, 400], items: [['worm_tooth', 1, 1], ['adamant_bar', 1, 2], ['uncut_diamond', 1, 2]], rare: ['worm_tooth'] },
+  mummy: { gold: [8, 16], items: [['herb_sunleaf', 0.3, 1]] },
+  bogwitch: { gold: [10, 18], items: [['herb_bloodmoss', 0.15, 1], ['vial', 0.5, 2], ['seed_marrentill', 0.3, 2]], rare: ['herb_bloodmoss'] },
+  frog: { gold: [2, 5], items: [['seed_guam', 0.3, 1]] },
+  pirate: { gold: [12, 25], items: [['seed_potato', 0.3, 3], ['steel_arrow', 0.2, 5], ['pirate_map', 0.04, 1]], rare: ['pirate_map'] },
+  crab: { gold: [3, 6], items: [['raw_meat', 0.4, 1]] },
+  shade: { gold: [6, 12], items: [['fade_rune', 0.2, 1]] },
+  drowned: { gold: [8, 14], items: [['bellrope', 0.5, 1]] },
+  inkwisp: { gold: [4, 8], items: [['ink_shard', 0.2, 1]], rare: ['ink_shard'] },
+  bellkeeper: { gold: [150, 150], items: [['bellrope', 1, 3], ['potion_health', 1, 2]] },
+  vael: { gold: [800, 800], items: [['vael_quill', 1, 1], ['ink_shard', 1, 3]], rare: ['vael_quill'] },
+};
+Object.assign(LOOT, LOOT3);
+Object.assign(SHOPS, {
+  oasis: { name: 'Oasis Bazaar', sells: { waterskin: 14, vial: 4, seed_potato: 3, seed_guam: 5, seed_marrentill: 8, desert_wrap: 80, potion_cooling: 45, coal: 18, compost: 4 } },
+  port: { name: 'Starfall Chandlery', sells: { raw_swordfish: 30, steel_arrow: 14, vial: 4, seed_pumpkin: 9, sapling_apple: 60, wolf_treat: 40, fur_hood: 80, potion_warmth: 45 } },
+  stable: { name: 'Oakhollow Stable', sells: { saddle: 1500, wolf_treat: 40, seed_potato: 3, compost: 4, sapling_apple: 60 } },
+  quartermaster: { name: 'Arena Quartermaster (tokens)', tokens: 1, sells: { cos_cape_crimson: 10, cos_cape_azure: 10, cos_title_duelist: 25, cos_cape_gold: 40, cos_title_champion: 60 } },
+});
+export const COSMETICS = {
+  cos_cape_crimson: { name: 'Crimson Arena Cape', icon: '🟥', color: 0xb02030 }, cos_cape_azure: { name: 'Azure Arena Cape', icon: '🟦', color: 0x2060c0 },
+  cos_cape_gold: { name: 'Golden Champion Cape', icon: '🟨', color: 0xe0b030 }, cos_title_duelist: { name: 'Title: the Duelist', icon: '🏷', title: 'the Duelist' }, cos_title_champion: { name: 'Title: Arena Champion', icon: '👑', title: 'Arena Champion' },
+};
+for (const [k, c] of Object.entries(COSMETICS)) ITEMS[k] = { name: c.name, icon: c.icon, v: 0, cosmetic: 1, untradeable: 1 };
+// Trading post (Grand Exchange style): NPC market with a base price, live price drift and NPC liquidity per item
+export const MARKET_ITEMS = ['log', 'plank', 'coal', 'iron_ore', 'iron_bar', 'steel_bar', 'mithril_ore', 'mithril_bar', 'adamant_ore', 'adamant_bar', 'raw_trout', 'trout', 'swordfish', 'hide', 'leather', 'feather', 'fire_shard', 'air_rune', 'fire_rune', 'fade_rune', 'herb_guam', 'herb_marrentill', 'herb_ranarr', 'herb_sunleaf', 'herb_bloodmoss', 'potion_health', 'potion_stamina', 'potion_antipoison', 'uncut_emerald', 'uncut_diamond', 'bomb', 'steel_arrow'];
+// Daily / weekly tasks (3 dailies + 2 weeklies drawn from these; seeded by the day / week so they're stable all day)
+export const TASK_POOL = [
+  { id: 'kill', kind: 'kill', n: [8, 15], name: (n) => `Defeat ${n} enemies`, xp: 'combat' },
+  { id: 'chop', kind: 'gather', skill: 'woodcutting', n: [10, 20], name: (n) => `Chop ${n} logs`, xp: 'woodcutting' },
+  { id: 'mine', kind: 'gather', skill: 'mining', n: [10, 18], name: (n) => `Mine ${n} ores or rocks`, xp: 'mining' },
+  { id: 'fish', kind: 'gather', skill: 'fishing', n: [6, 12], name: (n) => `Catch ${n} fish`, xp: 'fishing' },
+  { id: 'cook', kind: 'craft', skill: 'cooking', n: [5, 10], name: (n) => `Cook ${n} meals`, xp: 'cooking' },
+  { id: 'smith', kind: 'craft', skill: 'smithing', n: [4, 8], name: (n) => `Smith ${n} items`, xp: 'smithing' },
+  { id: 'herb', kind: 'craft', skill: 'herblore', n: [3, 6], name: (n) => `Mix ${n} potions`, xp: 'herblore' },
+  { id: 'farm', kind: 'harvest', n: [2, 4], name: (n) => `Harvest ${n} farming patches`, xp: 'farming' },
+  { id: 'hunt', kind: 'gather', skill: 'hunting', n: [3, 6], name: (n) => `Check ${n} successful traps`, xp: 'hunting' },
+  { id: 'boss', kind: 'boss', n: [1, 1], name: () => 'Defeat any boss', xp: 'combat', weekly: 1 },
+  { id: 'duel', kind: 'pvp', n: [1, 3], name: (n) => `Fight ${n} duels or arena rounds`, xp: 'combat', weekly: 1 },
+  { id: 'explore', kind: 'region', n: [2, 3], name: (n) => `Visit ${n} different regions`, xp: 'hunting', weekly: 1 },
+];
+export const TASK_REWARD = { daily: { coins: 120, xp: 1500 }, weekly: { coins: 600, xp: 8000 } };
+export const STREAK_BONUS = (streak) => 1 + Math.min(0.5, 0.1 * Math.max(0, streak - 1)); // +10%/day of streak, max +50%

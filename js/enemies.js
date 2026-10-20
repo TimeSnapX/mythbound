@@ -212,15 +212,52 @@ function buildMagmaw(mats) {
     core.scale.setScalar(s === 'stunned' ? 1.3 + Math.sin(t * 10) * 0.1 : 0.7);
   } };
 }
-const BUILDERS = { mossling: buildMossling, grubkin: buildGrubkin, boar: buildBoar, warden: buildWarden, hound: buildHound, imp: buildImp, hollowed: buildHollowed, shellback: buildShellback, magmaw: buildMagmaw };
+// v3: serpent (Frost Wyrm / Sandworm) and Vael the Unwriter
+function buildSerpent(mats) {
+  const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+  const hide = mats.add(0x6a7a8a), belly = mats.add(0xc8d0d8), eye = mats.add(0xffe060, true);
+  const segs = [];
+  for (let i = 0; i < 7; i++) { const s = new THREE.Group(); s.position.set(0, 0.9 + i * 0.75, -i * 0.5); body.add(s); const r = 1.3 - i * 0.07; s.add(part(new THREE.CylinderGeometry(r, r + 0.12, 0.85, 7), i % 2 ? hide : belly, 0, 0, 0)); s.add(part(new THREE.ConeGeometry(0.25, 0.6, 4), belly, 0, 0.3, -r)); segs.push(s); }
+  const head = new THREE.Group(); head.position.set(0, 6.0, 0.6); body.add(head);
+  head.add(part(new THREE.BoxGeometry(1.8, 1.1, 2.4), hide, 0, 0, 0.4));
+  const jaw = new THREE.Group(); jaw.position.set(0, -0.5, -0.3); head.add(jaw); jaw.add(part(new THREE.BoxGeometry(1.6, 0.4, 2.2), belly, 0, 0, 1.0));
+  for (const sx of [-1, 1]) { head.add(part(new THREE.BoxGeometry(0.25, 0.2, 0.1), eye, sx * 0.55, 0.3, 1.62)); const horn = part(new THREE.ConeGeometry(0.18, 1.0, 4), belly, sx * 0.6, 0.8, -0.2); horn.rotation.x = -0.6; head.add(horn); }
+  return { g, body, eyes: eye, anim(s, st, T, t) {
+    let y = 0, open = 0.1, lean = 0;
+    if (s === 'submerged' || s === 'dead') y = -9; else if (s === 'tell') { open = 0.6; lean = -0.25; } else if (s === 'attack') { open = 0.9; lean = 0.35; } else if (s === 'stuck') { lean = 0.6; y = -1.5; }
+    body.position.y += (y - body.position.y) * 0.25; body.rotation.x += (lean - body.rotation.x) * 0.2; jaw.rotation.x += (open - jaw.rotation.x) * 0.3;
+    segs.forEach((sg, i) => (sg.position.x = Math.sin(t * 2.4 + i * 0.8) * 0.25));
+    eye.emissive.setHex(s === 'tell' ? (Math.sin(t * 30) > 0 ? 0xff4000 : 0x802000) : 0x403000);
+  } };
+}
+function buildVael(mats) {
+  const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+  const robe = mats.add(0x2a1a3a), trim = mats.add(0xc0a060), skin = mats.add(0xd8d0e8), ink = mats.add(0x6020a0, true);
+  body.add(part(new THREE.ConeGeometry(0.9, 2.4, 6), robe, 0, 1.4, 0));
+  body.add(part(new THREE.CylinderGeometry(0.92, 0.92, 0.12, 6), trim, 0, 0.3, 0));
+  const head = part(new THREE.IcosahedronGeometry(0.38, 0), skin, 0, 2.85, 0); body.add(head);
+  body.add(part(new THREE.ConeGeometry(0.5, 0.9, 6), robe, 0, 3.15, -0.05));
+  const book = new THREE.Group(); book.position.set(0.9, 2.0, 0.6); body.add(book);
+  book.add(part(new THREE.BoxGeometry(0.7, 0.08, 0.5), trim, 0, 0, 0)); book.add(part(new THREE.BoxGeometry(0.66, 0.1, 0.46), mats.add(0xf0e8d0), 0, 0.06, 0));
+  const quill = part(new THREE.ConeGeometry(0.06, 1.2, 4), ink, -0.8, 2.1, 0.5); quill.rotation.z = 0.6; body.add(quill);
+  const halo = part(new THREE.TorusGeometry(0.7, 0.05, 4, 16), ink, 0, 3.6, 0); halo.rotation.x = Math.PI / 2; body.add(halo);
+  return { g, body, eyes: ink, anim(s, st, T, t) {
+    body.position.y = 0.3 + Math.sin(t * 2) * 0.15; book.rotation.y = t * 0.8; halo.rotation.z = t;
+    const sc = s === 'tell' ? 1 + Math.min(1, st / T.tell) * 0.25 : 1; halo.scale.setScalar(sc * (s === 'stuck' ? 0.5 : 1));
+    quill.rotation.z = s === 'attack' ? -0.6 : 0.6; ink.emissive.setHex(s === 'tell' ? (Math.sin(t * 25) > 0 ? 0xa040ff : 0x401060) : 0x200840);
+  } };
+}
+const BUILDERS = { serpent: buildSerpent, vael: buildVael, mossling: buildMossling, grubkin: buildGrubkin, boar: buildBoar, warden: buildWarden, hound: buildHound, imp: buildImp, hollowed: buildHollowed, shellback: buildShellback, magmaw: buildMagmaw };
 
 
 export class EnemyView {
   constructor(scene, e) {
     this.scene = scene; this.id = e.id; this.type = e.type; this.T = ENEMY_TYPES[e.type];
     this.mats = []; const self = this;
-    const mats = { add(c) { const m = lam(c); self.mats.push(m); return m; } };
-    const b = BUILDERS[e.type](mats);
+    const tint = this.T.tint !== undefined ? new THREE.Color(this.T.tint) : null;
+    const mats = { add(c) { const col = new THREE.Color(c); if (tint) col.lerp(tint, 0.55); const m = lam(col); self.mats.push(m); return m; } };
+    const b = (BUILDERS[e.type] || BUILDERS[this.T.look] || BUILDERS[this.T.ai] || buildMossling)(mats);
+    if (this.T.scale) b.g.scale.setScalar(this.T.scale);
     this.root = new THREE.Group(); this.root.add(b.g); this.b = b;
     if (this.T.boss) b.g.scale.setScalar(1.0);
     scene.add(this.root);
@@ -262,18 +299,30 @@ export class EnemyView {
       if (!this.lane) { this.lane = new THREE.Mesh(new THREE.PlaneGeometry(3, 10).rotateX(-Math.PI / 2).translate(0, 0, 6.5), new THREE.MeshBasicMaterial({ color: 0xff3010, transparent: true, opacity: 0.4, depthWrite: false })); this.scene.add(this.lane); }
       this.lane.visible = true; this.lane.position.set(e.x, 0.05, e.z); this.lane.rotation.y = this.ry; this.lane.material.opacity = 0.2 + p * 0.4;
     } else if (this.lane) this.lane.visible = false;
-    if (tell && (this.type === 'warden' || this.type === 'boar' || this.type === 'shellback')) {
+    const AI = this.T.ai || this.type;
+    if (tell && AI === 'phased' && (e.kind === 'slam' || e.kind === 'nova')) {
+      const p = Math.min(1, e.st / this.T.tell); this.ring.visible = true;
+      let rx = this.x, rz = this.z, r = 5.2; if (e.kind === 'slam') { rx += Math.sin(this.ry) * 2.6; rz += Math.cos(this.ry) * 2.6; r = 2.8; }
+      this.ring.position.set(rx, height(rx, rz) + 0.08, rz); this.ring.scale.setScalar(r * (0.3 + 0.7 * p)); this.ring.material.opacity = 0.3 + p * 0.4;
+    } else if (tell && AI === 'phased' && e.kind === 'lines') {
+      this.ring.visible = false; const p = Math.min(1, e.st / this.T.tell);
+      if (!this.inkLanes) { this.inkLanes = [0, 1, 2].map(() => { const m = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 13).rotateX(-Math.PI / 2).translate(0, 0, 8), new THREE.MeshBasicMaterial({ color: 0x8030ff, transparent: true, opacity: 0.4, depthWrite: false })); this.scene.add(m); return m; }); }
+      (e.lines || [e.ry]).forEach((a, i) => { const m = this.inkLanes[i]; if (!m) return; m.visible = true; m.position.set(e.x, height(e.x, e.z) + 0.07, e.z); m.rotation.y = a; m.material.opacity = 0.15 + p * 0.45; });
+    } else if (tell && (AI === 'warden' || AI === 'boar' || AI === 'shellback')) {
       const p = Math.min(1, e.st / (e.kind === 'sweep' ? 0.8 : this.T.tell));
       this.ring.visible = true;
       let rx = this.x, rz = this.z, r = 1.5;
-      if (this.type === 'warden') { if (e.kind === 'slam') { rx += Math.sin(this.ry) * 2.4; rz += Math.cos(this.ry) * 2.4; r = 2.6; } else r = 4; }
+      if (AI === 'warden') { if (e.kind === 'slam') { rx += Math.sin(this.ry) * 2.4; rz += Math.cos(this.ry) * 2.4; r = 2.6; } else r = 4; }
       else { rx += Math.sin(this.ry) * 4; rz += Math.cos(this.ry) * 4; r = 1.2; }
       this.ring.position.set(rx, height(rx, rz) + 0.08, rz); this.ring.scale.setScalar(r * (0.3 + 0.7 * p));
       this.ring.material.opacity = 0.3 + p * 0.4;
     } else this.ring.visible = false;
+    if (this.inkLanes && !(tell && e.kind === 'lines')) for (const m of this.inkLanes) m.visible = false;
+    if (e.state === 'submerged' && AI === 'phased' && e.bt) { this.ring.visible = true; this.ring.position.set(e.bt.x, height(e.bt.x, e.bt.z) + 0.08, e.bt.z); this.ring.scale.setScalar(3 * Math.min(1, e.st / 1.6)); this.ring.material.opacity = 0.55; }
+    this.root.visible = !e.hidden;
     this.showBarT -= dt;
     this.bar.visible = !!(locked || this.showBarT > 0 || this.T.boss) && !(this.type === 'magmaw' && (e.state === 'submerged' || e.state === 'idle'));
     if (this.bar.visible) { const f = Math.max(0.01, e.hp / (e.max || this.T.hp)); this.fill.scale.x = this.bw * f; this.fill.center.set(0.5 / f, 0.5); }
   }
-  dispose() { this.scene.remove(this.root); this.scene.remove(this.ring); if (this.lane) this.scene.remove(this.lane); }
+  dispose() { this.scene.remove(this.root); this.scene.remove(this.ring); if (this.lane) this.scene.remove(this.lane); for (const m of this.inkLanes || []) this.scene.remove(m); }
 }

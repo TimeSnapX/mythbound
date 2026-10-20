@@ -14,6 +14,34 @@ Installable as an app (manifest + network-first service worker scoped to `/mythb
 
 Run locally: `python3 -m http.server 8090` in this folder, then open http://localhost:8090/.
 
+## v3.0.0: the PvP mega update (changelog)
+
+**PvP (co-op worlds; the host referees every hit)**
+- **Duels**: challenge a nearby player. Rules are First-to-0 or Best-of-3, normalized stats (20 HP / 2 ATK) or your own gear, and potions on or off (max 3). A 3 s countdown starts each fight. Duels use a separate HP pool, so nobody loses items or real HP.
+- **Ashfall Arena**: 1v1 and 2v2 matchmaking. First team to 3 KOs wins, or whoever leads after 90 s. Leaving the ring counts as a KO (ring-out). Respawns take 3 s with a spawn shield. You get a scoreboard and arena tokens (win 3, draw 2, loss 1).
+- **Host validation**: the host checks reach (3.4 m, or 4.6 m for spin), the attack cooldown, roll i-frames, mounted attacks, unknown attack kinds, countdown hits, friendly fire and dead targets. Client stats are clamped. Stun diminishing returns: within 4 s, stuns go 100% → 50% → 25% → immune.
+- **Fadelands** (Emberfall Ridge): an opt-in skull flag with real damage. Only flagged players can fight each other. If you die there, you lose at most 3 half-stacks; your gear, tokens, quest items and your 3 most valuable stacks are never lost. The flag fades 10 s after you leave.
+- **Season leaderboard** (Firestore `/seasons`): the host records each match, every player acks it, and each player then updates only their own row (one claim per match, rating change of 32 or less).
+- **Player trade** in co-op: two-phase escrow. Any change to an offer resets both accepts. Accepting an out-of-date offer is rejected. Every delivery is applied once by trade id. Untradeable items are blocked.
+
+**World and story**
+- **The Drowned Belfry** dungeon and **Vael**: the Act 1 ending.
+- New regions: **Frostspire**, **Sunscar** (with a pyramid), **Mirewood** and **Starfall**. Also added: a world map with fast travel between the hearths you've discovered, and a day/night cycle with weather.
+- Tasks (daily and weekly), an NPC market, farming and herblore, mounts, achievements and a collection log, a journal, and procedural music per zone.
+
+**Phone and quality of life**
+- Phone controls 2.0: scalable buttons, plus a layout editor to drag buttons and save them.
+- The Install button is fixed.
+- A What's-new splash.
+- Saves from v2 migrate automatically, with nothing lost.
+- The service worker is now `v3.0.0`. Firebase and Google domains are never cached.
+
+### Firebase console steps for v3
+1. Firestore → Rules: paste `firestore.rules` from this repo and Publish. The save, lobby and relay rules haven't changed. The new rules add `/seasons/{season}/{matches,players,claims}`.
+2. No new indexes are needed (the leaderboard sorts at most 20 rows on the client).
+3. Authentication: no change (Google sign-in). The leaderboard only appears for signed-in players in an online co-op world.
+4. Optional: in Rules Playground, try writing `seasons/2026-S1/players/<someone-else>`. It should be denied.
+
 ## v2.2.0 — changelog
 - **Online co-op (2–4 players, free)**: 👥 Co-op button on the title screen and in Settings.
   - **Host World** shows a 6-character code with 📋 Copy and 🔗 Invite buttons. Invite uses the phone share sheet when there is one, and otherwise copies a `?join=CODE` link. **Join World** takes a code; opening an invite link pre-fills it.
