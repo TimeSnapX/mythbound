@@ -1,6 +1,7 @@
 rules_version = '2';
 // Mythbound cloud saves. Each player can read/write only their own documents at users/{uid}/saves/{main|backup}.
 // v2.2 adds co-op lobby signaling under /lobbies (below the save rules, which are unchanged).
+// v3.0 adds the arena season leaderboard under /seasons (save, lobby and relay rules unchanged).
 service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid}/saves/{slot} {
@@ -81,6 +82,67 @@ service cloud.firestore {
           allow create: if isGuest() && lobbyOpen(code) && validCand();
           allow delete: if isGuest() || isHost(code);
         }
+      }
+    }
+
+    // ---- v3.0 arena season leaderboard ("co-op verified, friendly"). Save, lobby and relay rules above are unchanged. ----
+    // matches: written only by the co-op host who refereed the match; every player then acks it with their own uid.
+    // players/{uid}: each player can only change their own row, once per match (one-time claim doc in the same batch),
+    // and only after every player in the match has acked it. Wins/matches go up by at most 1, rating moves <= 32.
+    match /seasons/{season} {
+      function sid() { return season.matches('^[0-9]{4}-S[0-9]{1,2}$'); }
+      function m(id) { return get(/databases/$(database)/documents/seasons/$(season)/matches/$(id)).data; }
+      match /matches/{id} {
+        function validMatch() {
+          let d = request.resource.data;
+          return sid() && id.matches('^[A-Za-z0-9_-]{6,40}$')
+            && d.keys().hasOnly(['hostUid', 'players', 'winners', 'names', 'mode', 'kos', 'durationS', 'createdAt', 'acks'])
+            && d.hostUid == request.auth.uid
+            && d.players is list && (d.players.size() == 2 || d.players.size() == 4)
+            && d.winners is list && d.winners.size() <= 2 && d.players.hasAll(d.winners)
+            && d.mode in ['1v1', '2v2', 'duel'] && (d.mode != '2v2' || d.players.size() == 4)
+            && d.kos is list && d.kos.size() == 2 && d.kos[0] is int && d.kos[1] is int && d.kos[0] >= 0 && d.kos[0] <= 60 && d.kos[1] >= 0 && d.kos[1] <= 60
+            && d.durationS is int && d.durationS >= 5 && d.durationS <= 1800
+            && d.names is map && d.names.size() <= 4
+            && d.createdAt == request.time && d.acks.size() == 0;
+        }
+        allow read: if signedIn();
+        allow create: if signedIn() && validMatch();
+        allow update: if signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acks'])
+          && resource.data.players.hasAny([request.auth.uid])
+          && !resource.data.acks.hasAny([request.auth.uid])
+          && request.resource.data.acks.size() == resource.data.acks.size() + 1
+          && request.resource.data.acks.hasAll(resource.data.acks)
+          && request.resource.data.acks.hasAny([request.auth.uid]);
+      }
+      match /claims/{cid} {
+        // cid = {matchId}_{uid}; created only in the same batch as the player's own row update
+        allow read: if signedIn();
+        allow create: if signedIn() && cid.matches('^.+_' + request.auth.uid + '$')
+          && request.resource.data.keys().hasOnly(['at']) && request.resource.data.at == request.time;
+      }
+      match /players/{uid} {
+        function claimId() { return request.resource.data.lastMatch + '_' + uid; }
+        function prev(k, d) { return resource == null ? d : resource.data[k]; }
+        function validRow() {
+          let d = request.resource.data;
+          let mt = m(d.lastMatch);
+          let won = mt.winners.hasAny([uid]);
+          return sid() && request.auth.uid == uid
+            && d.keys().hasOnly(['uid', 'name', 'wins', 'losses', 'matches', 'rating', 'lastMatch', 'updatedAt'])
+            && d.uid == uid && d.name is string && d.name.size() <= 16 && d.updatedAt == request.time
+            && d.lastMatch is string
+            && !exists(/databases/$(database)/documents/seasons/$(season)/claims/$(claimId()))
+            && existsAfter(/databases/$(database)/documents/seasons/$(season)/claims/$(claimId()))
+            && mt.players.hasAny([uid]) && mt.acks.hasAll(mt.players)
+            && d.matches == prev('matches', 0) + 1
+            && d.wins == prev('wins', 0) + (won ? 1 : 0)
+            && d.losses >= prev('losses', 0) && d.losses <= prev('losses', 0) + 1
+            && d.rating is int && d.rating >= prev('rating', 1000) - 32 && d.rating <= prev('rating', 1000) + 32;
+        }
+        allow read: if signedIn();
+        allow create, update: if validRow();
       }
     }
 
