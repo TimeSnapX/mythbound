@@ -14,7 +14,7 @@ body.locked .lb { height: 5vh; }
 #topleft { position: absolute; left: 14px; top: calc(12px + env(safe-area-inset-top)); pointer-events: none !important; }
 #hearts { display: flex; gap: 3px; flex-wrap: wrap; max-width: 260px; }
 .heart { width: 24px; height: 22px; display: inline-block; background: #3a1010; clip-path: path("M12 21 L2 11 C-2 6 3 -1 8 2 C10 3 11 4 12 6 C13 4 14 3 16 2 C21 -1 26 6 22 11 Z"); }
-.heart.full { background: #ff3040; } .heart.half { background: linear-gradient(90deg, #ff3040 50%, #3a1010 50%); }
+.heart.full { background: #ff3040; } .heart.half { background: linear-gradient(90deg, #ff3040 50%, #3a1010 50%); } .heart.q1 { background: linear-gradient(90deg, #ff3040 25%, #3a1010 25%); } .heart.q3 { background: linear-gradient(90deg, #ff3040 75%, #3a1010 75%); }
 #stamina { margin-top: 6px; width: 160px; height: 10px; background: rgba(0,0,0,.5); border: 2px solid #1a2a10; border-radius: 6px; overflow: hidden; transition: opacity .6s; }
 #stamina.full { opacity: .35; }
 #stamina-fill { height: 100%; background: linear-gradient(#8cff60, #3cc030); width: 100%; }
@@ -300,3 +300,24 @@ body.layout-edit:not(.touch) #touch button { transform: scale(var(--bs, 1)); }
 .task .bar { flex: 1 1 100%; height: 6px; background: #2a2218; border-radius: 3px; overflow: hidden; } .task .bar i { display: block; height: 100%; background: #c8a040; }
 .maplist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; } .maplist button[disabled] { opacity: .45; }
 .up { color: #6fd06f; } .dn { color: #ff7a6a; } .colgrid .cell.missing { opacity: .25; filter: grayscale(1); }
+
+/* v3.1 */
+#banner, #toasts { z-index: 60; }
+#levelup { position: fixed; left: 50%; top: 22%; transform: translate(-50%, -12px) scale(.96); z-index: 2147483000; pointer-events: none; opacity: 0; transition: opacity .3s, transform .3s;
+  background: radial-gradient(rgba(40,28,8,.96), rgba(20,14,6,.94)); border: 3px solid #ffcf7a; border-radius: 14px; padding: 12px 26px; text-align: center; box-shadow: 0 0 40px rgba(255,200,80,.55); }
+#levelup.on { opacity: 1; transform: translate(-50%, 0) scale(1); }
+#levelup b { display: block; font-size: 30px; color: #ffd040; text-shadow: 0 2px 0 #000; } #levelup small { display: block; color: #fff; font-size: 15px; margin-top: 2px; }
+.skill { cursor: pointer; } .skill:hover { outline: 2px solid #ffcf7a; }
+.skd-lv { margin: 8px 0 2px; color: #ffcf7a; font-weight: bold; } .skd-it { padding: 3px 8px; margin: 2px 0; border-radius: 6px; background: rgba(255,255,255,.05); }
+.skd-it.on { color: #b8f0a0; } .skd-it.off { color: #9a8f80; } .skd-goal { background: rgba(255,207,122,.15); border: 1px solid #ffcf7a; border-radius: 8px; padding: 6px 10px; margin: 8px 0; }
+.trade-confirm table { width: 100%; } .trade-confirm td { vertical-align: top; padding: 4px; }
+body.pvpzone #hud { filter: none; }
+@media (pointer: coarse) { #panel button { min-height: 40px; } }
+/* v3.1: short landscape phones - the secondary touch column ran off the bottom and under the roll/attack buttons; lay it out as a bottom-centre row */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 520px) {
+  #tbtns2 { top: auto !important; bottom: calc(10px + env(safe-area-inset-bottom)); right: auto; left: 50%; transform: translateX(-50%); width: auto; height: auto; flex-direction: row; }
+}
+/* v3.1: bigger duel-invite buttons for thumbs */
+#invite button { min-height: 44px; min-width: 96px; padding: 8px 16px; font-size: 16px; }
+/* v3.1: the ✋ use and 🍖 quick buttons overlapped the 🎯 lock button on phones */
+#t-use { right: 162px; bottom: 152px; } #t-quick { right: 168px; bottom: 224px; }

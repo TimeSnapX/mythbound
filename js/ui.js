@@ -11,7 +11,8 @@ const fmt = (n) => Math.floor(n).toLocaleString('en-AU');
 export function show(sel, on = true) { $(sel)?.classList.toggle('hidden', !on); }
 export function hearts(hp, maxHalves) {
   const n = Math.ceil(maxHalves / 2); let h = '';
-  for (let i = 0; i < n; i++) { const v = hp - i * 2; h += `<span class="heart ${v >= 2 ? 'full' : v === 1 ? 'half' : 'empty'}"></span>`; }
+  // v3.1: hp is in half-hearts and may be fractional in quarter-heart steps (0.5)
+  for (let i = 0; i < n; i++) { const v = Math.round((hp - i * 2) * 2) / 2; h += `<span class="heart ${v >= 2 ? 'full' : v >= 1.5 ? 'q3' : v >= 1 ? 'half' : v >= 0.5 ? 'q1' : 'empty'}"></span>`; }
   const e = $('#hearts'); if (e.innerHTML !== h) e.innerHTML = h;
 }
 export function stamina(f, exhausted) { const s = $('#stamina-fill'); s.style.width = (f * 100).toFixed(1) + '%'; s.classList.toggle('low', exhausted || f < 0.25); $('#stamina').classList.toggle('full', f >= 0.999); }

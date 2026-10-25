@@ -28,6 +28,7 @@ import { buildBelfry, buildPyramid, BELFRY_SPAWNS, PYRAMID_SPAWNS, BELFRY_CP, be
 import { BELFRY_START, PYRAMID_START, BELFRY_ENTRANCE } from './shared.js';
 import { installV3 } from './v3.js';
 import { installPvP } from './pvp-session.js';
+import { installV31 } from './v31.js';
 
 const SAVE_KEY = 'mythbound_save_v2', SAVE_KEY_V1 = 'mythbound_save_v1', SETTINGS_KEY = 'mythbound_settings';
 const PR = 0.4, STEP = 0.55, GRAV = 25;
@@ -630,14 +631,16 @@ export class Game {
       return;
     }
     this.onStatusHit?.(ev);
-    this.hurt(ev.dmg, ev.sx, ev.sz);
+    this.hurt(ev.dmg, ev.sx, ev.sz, 0.35, this.hitKind ? this.hitKind(ev, bt) : 'melee');
   }
-  hurt(dmg, sx, sz, stun = 0.35) {
-    const p = this.p; if (p.mode !== 'dead' && this.mounted) this.dismount('You were knocked off your mount!');
+  hurt(dmg, sx, sz, stun = 0.35, kind = 'env') {
+    const p = this.p;
     if (p.mode === 'dead' || this.god) return;
     this.stunDur = stun;
-    // armour: each point of defence gives a 5% chance to shrug off half a heart (min 1)
-    const def = this.stats().def; if (dmg > 1 && this.rand() < def * 0.05) dmg -= 1;
+    // v3.1: armour reduces hits by attack type (melee / ranged / magic); every hit costs at least 1/4 heart (0.5 hp)
+    dmg = this.armourDamage ? this.armourDamage(dmg, kind) : dmg;
+    this.lastHurt = { dmg, kind, t: this.t };
+    if (this.mounted && dmg >= 2) this.dismount('You were knocked off your mount!');
     p.hp = Math.max(0, p.hp - dmg); p.inv = 1.0;
     const ax = p.x - sx, az = p.z - sz, al = Math.hypot(ax, az) || 1;
     p.kx = (ax / al) * 9; p.kz = (az / al) * 9; p.mode = 'hurt'; p.mt = 0; p.combo = 0;
@@ -782,7 +785,7 @@ export class Game {
       for (const r of this.runaways) if (r.P.root.visible && !r.home) add(dist(r), 2.6, { kind: 'runaway', r, label: `Calm the runaway ${PETS[r.type].name.toLowerCase()}` });
       if (!this.buildMode) for (const b of this.building.interactablesNear(p.x, p.z, 2.4)) {
         if (Math.abs(b.y - p.y) > 3.5) continue;
-        const L = { door: this.building.isOpen(b.k, b.i) ? 'Close door' : 'Open door', chest: 'Open storage chest', bench: 'Use workbench', campfire: 'Cook on campfire', hearth: this.s.home?.hearth && Math.hypot(this.s.home.hearth.x - b.x, this.s.home.hearth.z - b.z) < 0.1 ? 'Your Hearthstone (respawn point)' : 'Bind to this Hearthstone', bankchest: 'Open bank chest' }[b.type];
+        const L = { door: this.building.isOpen(b.k, b.i) ? 'Close door' : 'Open door', chest: 'Open storage chest', bed: this.isNight?.() ? 'Sleep until morning' : 'Bed (sleep at night)', bench: 'Use workbench', campfire: 'Cook on campfire', hearth: this.s.home?.hearth && Math.hypot(this.s.home.hearth.x - b.x, this.s.home.hearth.z - b.z) < 0.1 ? 'Your Hearthstone (respawn point)' : 'Bind to this Hearthstone', bankchest: 'Open bank chest' }[b.type];
         add(b.d + 0.2, 2.4, { kind: 'piece', b, label: L });
       }
       this.v3OverworldInteracts(add, dist);
@@ -839,6 +842,7 @@ export class Game {
         if (b.type === 'door') { this.building.toggleDoor(b.k, b.i); this.audio.play('door'); this.save(); return; }
         if (b.type === 'chest') return this.openPanel('chest:' + b.k + '#' + b.i);
         if (b.type === 'bankchest') return this.openPanel('bank');
+        if (b.type === 'bed') return this.trySleep?.(b);
         if (b.type === 'bench') { this.currentStation = { obj: b.mesh }; return this.openPanel('workbench'); }
         if (b.type === 'campfire') { this.currentStation = { obj: b.mesh }; return this.openPanel('range'); }
         if (b.type === 'hearth') { this.s.home.hearth = { x: b.x, z: b.z }; this.audio.play('quest'); UI.banner('Hearthstone bound', 'You will respawn here'); this.save(); return; }
@@ -868,6 +872,7 @@ export class Game {
   finishGather(n) {
     if (n.depleted) return UI.toast('Nothing left here.', 'bad');
     if (this.online && !NODE_TYPES[n.type].fish && !['essence', 'ashtree', 'coal'].includes(n.type) && !n.id.match(/^(riron|rrock)/)) return this.net.send({ t: 'gather', id: n.id });
+    if (NODE_TYPES[n.type].fish && this.fishCatch) return this.fishCatch(n);
     this.world.setNodeDepleted(n.id, true, performance.now() + NODE_TYPES[n.type].respawn * 1000);
     this.rewardGather(n);
   }
@@ -1030,7 +1035,7 @@ export class Game {
   updatePlayer(dt) {
     const p = this.p, I = this.input;
     p.mt += dt; p.inv -= dt; p.stamT += dt;
-    if (p.stamT > 0.8 && p.mode !== 'block' && p.mode !== 'charge') p.stam = Math.min(100, p.stam + 30 * dt);
+    if (p.stamT > 0.8 && p.mode !== 'block' && p.mode !== 'charge') p.stam = Math.min(100, p.stam + 30 * dt * (this.buffs?.endurance ? 1.6 : 1));
     const uiBlocked = this.inDialog || UI.panelOpen() || this.fading;
     if (this.animOverride) { this.animOverride.t -= dt; this.animOverride.mt = (this.animOverride.mt || 0) + dt; if (this.animOverride.t <= 0) this.animOverride = null; }
     // global UI keys
@@ -1073,11 +1078,12 @@ export class Game {
       }
       if (I.wasPressed('lock') && !this.buildMode) this.toggleLock();
       const free = p.mode === 'normal' || p.mode === 'block';
-      const mountedBlock = this.mounted && (I.wasPressed('attack') || I.wasPressed('bow') || I.wasPressed('spell') || I.wasPressed('bomb'));
-      if (mountedBlock) { this.dismount(); UI.toast('You hop off your mount to fight.', ''); }
+      const mountedSpell = this.mounted && I.wasPressed('spell'); if (mountedSpell) UI.toast('You cannot cast spells while riding. Melee and bows work on horseback.', 'bad');
+      const mountedBlock = mountedSpell || (this.mounted && I.wasPressed('bomb'));
+      if (this.mounted && I.wasPressed('bomb')) { this.dismount(); UI.toast('You hop off your mount to throw a bomb.', ''); }
       if (free && !this.buildMode && !mountedBlock) {
-        if (I.wasPressed('attack')) { if (this.pvpSafe?.()) UI.toast('No fighting here.', ''); else if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
-        else if (I.wasPressed('roll') && p.stam >= 10 && p.grounded) { p.mode = 'roll'; p.mt = 0; this.useStam(22); p.rdx = wl > 0.1 ? wx / wl : (lockP ? -fx : Math.sin(p.ry)); p.rdz = wl > 0.1 ? wz / wl : (lockP ? -fz : Math.cos(p.ry)); }
+        if (I.wasPressed('attack')) { if (this.pvpSafe?.()) UI.toast('No fighting here.', ''); else if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Put that away — the village is a safe zone.', ''); else { p.mode = 'attack'; p.combo = 1; p.mt = 0; p.hitDone = false; p.queued = false; p.held = true; this.combatStam?.('swing'); if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); } }
+        else if (I.wasPressed('roll') && p.stam >= 10 && p.grounded) { p.mode = 'roll'; p.mt = 0; p.rollSafe = { x: p.x, y: p.y, z: p.z }; this.useStam(this.rollCost ? this.rollCost() : 22); p.rdx = wl > 0.1 ? wx / wl : (lockP ? -fx : Math.sin(p.ry)); p.rdz = wl > 0.1 ? wz / wl : (lockP ? -fz : Math.cos(p.ry)); }
         else if (I.wasPressed('grapple')) this.tryGrapple();
         else if (I.wasPressed('bomb')) this.throwBomb();
         else if (I.wasPressed('bow')) { if (this.zoneName() === 'village' || this.zoneName() === 'camp') UI.toast('Not in a safe zone.', ''); else this.shoot(); }
@@ -1092,7 +1098,7 @@ export class Game {
         if (I.wasReleased('attack')) p.held = false;
       }
       if (p.mode === 'charge' && I.wasReleased('attack')) {
-        if (p.mt >= 0.8 && p.stam >= 20) { p.mode = 'spin'; p.mt = 0; p.hitDone = false; this.useStam(30); }
+        if (p.mt >= 0.8 && (p.stam >= 20 || this.buffs?.endurance)) { p.mode = 'spin'; p.mt = 0; p.hitDone = false; this.useStam(this.buffs?.endurance ? 0 : 30); }
         else p.mode = 'normal';
       }
       if (p.mode === 'gather' && (moving || I.wasPressed('attack') || I.wasPressed('roll'))) p.mode = 'normal';
@@ -1105,7 +1111,7 @@ export class Game {
       case 'normal': case 'block': {
         const sprint = I.isDown('sprint') && !lockP && moving && p.stam > 0 && p.mode === 'normal';
         speed = (p.mode === 'block' ? 2.2 : lockP ? 4.6 : sprint ? 8.5 : 5.6) * (this.mounted ? this.mountSpeed() * (sprint ? 0.85 : 1) : 1) * (this.slowT > 0 ? 0.55 : 1) * (this.buffs?.stamina ? 1.05 : 1);
-        if (sprint) this.useStam(14 * dt);
+        if (sprint) this.useStam(14 * dt * (this.buffs?.endurance ? 0.55 : 1));
         if (wl > 0.1) { dirx = wx / wl; dirz = wz / wl; speed *= Math.min(1, Math.hypot(mv.x, mv.y)); } else speed = 0;
         if (lockP) p.ry = lerpAngle(p.ry, Math.atan2(lockP.x - p.x, lockP.z - p.z), 1 - Math.exp(-dt * 14));
         else if (speed > 0) p.ry = lerpAngle(p.ry, Math.atan2(dirx, dirz), 1 - Math.exp(-dt * 12));
@@ -1116,7 +1122,7 @@ export class Game {
         if (!p.hitDone && p.mt >= A.hit) { p.hitDone = true; this.doHit('attack' + p.combo); }
         if (p.mt < A.hit) { speed = 3; dirx = Math.sin(p.ry); dirz = Math.cos(p.ry); }
         if (p.mt >= A.dur) {
-          if (p.queued && p.combo < 3) { p.combo++; p.mt = 0; p.hitDone = false; p.queued = false; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); }
+          if (p.queued && p.combo < 3) { p.combo++; p.mt = 0; this.combatStam?.('swing'); p.hitDone = false; p.queued = false; if (lockP) p.ry = Math.atan2(lockP.x - p.x, lockP.z - p.z); }
           else if (p.held) { p.mode = 'charge'; p.mt = 0; }
           else { p.mode = 'normal'; p.combo = 0; }
         }
@@ -1134,7 +1140,7 @@ export class Game {
         if (p.mt > 0.55) p.mode = 'normal';
         break;
       case 'roll': {
-        const k = p.mt < 0.4 ? 1 : 0.3; speed = 11 * k; dirx = p.rdx; dirz = p.rdz;
+        const k = p.mt < 0.4 ? 1 : 0.3; speed = 11 * k; { const rl = Math.hypot(p.rdx, p.rdz); if (!Number.isFinite(rl) || rl < 1e-6) { p.rdx = Math.sin(p.ry) || 0; p.rdz = Number.isFinite(Math.cos(p.ry)) ? Math.cos(p.ry) : 1; } else { p.rdx /= rl; p.rdz /= rl; } } dirx = p.rdx; dirz = p.rdz;
         if (!lockP) p.ry = Math.atan2(dirx, dirz);
         if (p.mt > 0.5) p.mode = 'normal';
         break;
@@ -1191,6 +1197,8 @@ export class Game {
       this.debug.teleport(cp.x, cp.z, 0); p.ry = Math.PI; p.lock = null; p.mode = 'normal';
       UI.toast('You fell into the chasm!', 'bad'); this.hurt(1, p.x, p.z + 1); if (p.mode === 'hurt') { p.kx = p.kz = 0; }
     }
+    // v3.1: guard against NaN / runaway positions (dodge roll, knockback): fall back to the last good position
+    this.guardPos?.(dt);
     // avatar
     this.player.root.position.set(p.x, p.y + (this.mounted ? 0.85 : 0), p.z); this.player.root.rotation.y = p.ry;
     this.player.root.visible = !(p.inv > 0 && p.mode !== 'dead' && Math.sin(this.t * 40) > 0.3);
@@ -1408,8 +1416,9 @@ export class Game {
     if (did === 'mine' || (this.coop?.isHost && this.coop.joinedPeers.some((q) => zoneKey(q.x, q.z) === 'mine'))) for (const ev of this.mine.update(this.t, dt)) this.onMineEvent(ev);
     const focus = new THREE.Vector3(this.p.x, this.p.y, this.p.z);
     this.ridge.update(this.t, dt, focus, this.zoneName());
-    const tod = this.todOverride ?? ((Date.now() / 1000 / 600 + 0.12) % 1);
+    const tod = this.todOverride ?? (((Date.now() / 1000 / 600 + 0.12 + (this.todOff ? this.todOff() : 0)) % 1) + 1) % 1; this.tod = tod;
     this.world.setTime(tod, focus, this.inDungeon, did || this.zoneName());
+    this.v31Light?.(dt);
     this.v3Visuals(dt);
     this.audio.setTrack(this.musicTrack());
     this.input.endFrame();
@@ -1419,3 +1428,4 @@ export class Game {
 Object.assign(Game.prototype, RPG, Story, Systems);
 installV3(Game);
 installPvP(Game);
+installV31(Game);

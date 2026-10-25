@@ -361,5 +361,6 @@ export function buildWorld(scene, { shadows = true } = {}) {
   W.entrance = { x: ex, z: ez + 0.8, y: ey };
 
   W.height = islandHeight; W.H = H; W.mesh = mesh; W.M = M;
+  W.sun = sun; W.hemi = hemi;
   return W;
 }

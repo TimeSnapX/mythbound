@@ -13,23 +13,37 @@
 import { SEASON, eloDelta, matchSanity } from './pvp.js';
 
 export const RATING0 = 1000;
-export function claimUpdate(prev, match, uid) {
+// v3.1 anti-farming: the first FARM_FULL ranked results against the same opponent(s) per UTC day count fully;
+// after that the match is still recorded (matches +1) but gives 0 wins, 0 losses and 0 rating. Mirrored in firestore.rules.
+export const FARM_FULL = 3;
+export const utcDay = (ms = Date.now()) => Math.floor(ms / 86400000);
+export function oppKey(match, uid) { const P = match.players, half = P.length / 2, mine = P.indexOf(uid) < half ? 0 : 1; return (mine === 0 ? P.slice(half) : P.slice(0, half)).join('+'); }
+export function claimUpdate(prev, match, uid, now = Date.now()) {
   const p = prev || { uid, wins: 0, losses: 0, matches: 0, rating: RATING0 };
   const won = match.winners.includes(uid), draw = !match.winners.length;
   const opp = match.oppRating ?? RATING0;
-  const d = Math.max(-32, Math.min(32, eloDelta(p.rating, opp, draw ? 0.5 : won ? 1 : 0)));
-  return { uid, name: String(match.names?.[uid] || p.name || 'Player').slice(0, 16), wins: p.wins + (won ? 1 : 0), losses: p.losses + (!won && !draw ? 1 : 0), matches: p.matches + 1, rating: p.rating + d, lastMatch: match.id };
+  const day = utcDay(now), key = oppKey(match, uid);
+  const f = p.farm && p.farm.day === day ? p.farm : { day, n: {} }, prior = f.n[key] || 0, full = prior < FARM_FULL;
+  const d = full ? Math.max(-32, Math.min(32, eloDelta(p.rating, opp, draw ? 0.5 : won ? 1 : 0))) : 0;
+  return { uid, name: String(match.names?.[uid] || p.name || 'Player').slice(0, 16), wins: p.wins + (won && full ? 1 : 0), losses: p.losses + (!won && !draw && full ? 1 : 0), matches: p.matches + 1, rating: p.rating + d, lastMatch: match.id,
+    farm: { day, n: { ...f.n, [key]: prior + 1 } }, counted: full };
 }
 // Mirror of the firestore.rules checks, used by the in-memory adapter (tests) and as a client-side pre-check.
 export const RULES = {
   createMatch(auth, m) { const tA = m.players.slice(0, m.players.length / 2), tB = m.players.slice(m.players.length / 2), w = !m.winners.length ? -1 : m.winners.every((u) => tA.includes(u)) ? 0 : m.winners.every((u) => tB.includes(u)) ? 1 : 9; return !!auth && m.hostUid === auth && matchSanity({ ...m, teamA: tA, teamB: tB, winner: w }).length === 0 && m.winners.every((w) => m.players.includes(w)) && (m.acks || []).length === 0; },
   ack(auth, m, newAcks) { return !!auth && m.players.includes(auth) && !m.acks.includes(auth) && newAcks.length === m.acks.length + 1 && newAcks.includes(auth) && m.acks.every((a) => newAcks.includes(a)); },
-  claim(auth, uid, m, claimExistedBefore, prev, next) {
+  claim(auth, uid, m, claimExistedBefore, prev, next, now = Date.now()) {
     if (!auth || auth !== uid || !m || claimExistedBefore) return false;
     if (!m.players.includes(uid) || !m.players.every((p) => m.acks.includes(p))) return false;
     const P = prev || { wins: 0, losses: 0, matches: 0, rating: RATING0 };
     const won = m.winners.includes(uid);
-    return next.matches === P.matches + 1 && next.wins === P.wins + (won ? 1 : 0) && next.losses >= P.losses && next.losses <= P.losses + 1 && Math.abs(next.rating - P.rating) <= 32 && next.lastMatch === m.id;
+    // v3.1 anti-farming (same checks as firestore.rules)
+    const day = utcDay(now), key = oppKey(m, uid), pf = P.farm && P.farm.day === day ? P.farm.n : {}, prior = pf[key] || 0, full = prior < FARM_FULL;
+    if (!next.farm || next.farm.day !== day || !next.farm.n || next.farm.n[key] !== prior + 1) return false;
+    for (const k of new Set([...Object.keys(pf), ...Object.keys(next.farm.n)])) if (k !== key && next.farm.n[k] !== pf[k]) return false;
+    if (Object.keys(next.farm.n).length > 30) return false;
+    if (!full && (next.wins !== P.wins || next.losses !== P.losses || next.rating !== P.rating)) return false;
+    return next.matches === P.matches + 1 && next.wins === P.wins + (won && full ? 1 : 0) && next.losses >= P.losses && next.losses <= P.losses + 1 && Math.abs(next.rating - P.rating) <= 32 && next.lastMatch === m.id;
   },
 };
 // In-memory "Firestore" with the same rules: used by e2e-v3 (window.MB_LEADERBOARD) and ?debug=1&lb=mock.
@@ -58,7 +72,7 @@ export async function createFirestoreLeaderboard(config) {
     async ack(auth, id) { await F.updateDoc(mRef(id), { acks: F.arrayUnion(auth) }); },
     async getMatch(id) { const s = await F.getDoc(mRef(id)); return s.exists() ? { id, ...s.data() } : null; },
     async getPlayer(uid) { const s = await F.getDoc(pRef(uid)); return s.exists() ? s.data() : null; },
-    async claim(auth, uid, id, next) { const b = F.writeBatch(db); b.set(cRef(id, uid), { at: F.serverTimestamp() }); b.set(pRef(uid), { ...next, updatedAt: F.serverTimestamp() }); await b.commit(); },
+    async claim(auth, uid, id, next) { const b = F.writeBatch(db); b.set(cRef(id, uid), { at: F.serverTimestamp() }); const { counted, ...row } = next; b.set(pRef(uid), { ...row, updatedAt: F.serverTimestamp() }); await b.commit(); },
     async top(n = 20) { const q = F.query(F.collection(db, 'seasons', SEASON, 'players'), F.orderBy('rating', 'desc'), F.limit(n)); return (await F.getDocs(q)).docs.map((d) => d.data()); },
   };
 }

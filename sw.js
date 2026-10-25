@@ -9,9 +9,10 @@
  * - Co-op (v2.2): Firestore signaling and the Realtime Database relay (firebaseio.com, firebasedatabase.app) are
  *   network-only too. WebRTC data channels and STUN never pass through a service worker.
  * - v3.0: the season leaderboard (Firestore) is network-only like the rest of Firebase; the new game modules are precached.
+ * - v3.1: js/v31.js precached (fishing, beds, armour, caves, safer trades); Firebase still network-only.
  * Bump VERSION to drop old caches.
  */
-const VERSION = "v3.0.0";
+const VERSION = "v3.1.0";
 const CACHE = `mythbound-${VERSION}`;
 const SCOPE = new URL(self.registration.scope);
 const PRECACHE = [
@@ -22,7 +23,7 @@ const PRECACHE = [
   "js/ridge.js", "js/mine.js", "js/audio.js", "js/pets.js", "js/rpg.js", "js/story.js", "js/systems.js", "js/install.js", "assets/logo.webp",
   "js/cloud.js", "js/cloud-ui.js", "js/firebase-config.js",
   "js/coop.js", "js/coop-net.js", "js/coop-ui.js",
-  "js/v3.js", "js/regions.js", "js/belfry.js", "js/pvp.js", "js/pvp-session.js", "js/leaderboard.js",
+  "js/v3.js", "js/regions.js", "js/belfry.js", "js/pvp.js", "js/pvp-session.js", "js/leaderboard.js", "js/v31.js",
   "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-192.png", "icons/icon-maskable-512.png", "icons/apple-touch-icon.png"
 ];
 const NEVER = ["sw.js"];

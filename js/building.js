@@ -26,6 +26,7 @@ function localBoxes(type, open) {
     case 'bench': return [[-0.7, 0.7, -0.4, 0.4, 0, 1.0]];
     case 'anchor': return [[-0.2, 0.2, -0.2, 0.2, 0, 3.2]];
     case 'hearth': return [[-0.45, 0.45, -0.45, 0.45, 0, 1.6]];
+    case 'bed': return [[-0.5, 0.5, -0.72, 0.72, 0, 0.6]];
     default: return P.solid === false ? [] : [[-HB, HB, -HB, HB, 0, P.h]];
   }
 }
@@ -38,6 +39,7 @@ export function makePieceMesh(type, rot = 0, opts = {}) {
   const g = new THREE.Group(), P = PIECES[type], c = P.color;
   switch (type) {
     case 'wood': case 'stone': bx(g, B, B, B, c, 0, HB, 0); break;
+    case 'bed': bx(g, 1.0, 0.3, 1.45, c, 0, 0.25, 0); bx(g, 0.9, 0.14, 1.3, 0xe8e0d0, 0, 0.45, 0.02); bx(g, 0.9, 0.16, 0.8, 0x4a70b0, 0, 0.5, 0.28); bx(g, 0.6, 0.12, 0.3, 0xffffff, 0, 0.55, -0.45); bx(g, 1.0, 0.7, 0.1, 0x7a4e2a, 0, 0.45, -0.72); for (const [x, z] of [[-0.45, -0.68], [0.45, -0.68], [-0.45, 0.68], [0.45, 0.68]]) bx(g, 0.1, 0.25, 0.1, 0x5a3a20, x, 0.12, z); break;
     case 'floor': bx(g, B, P.h, B, c, 0, P.h / 2, 0); break;
     case 'wall': bx(g, B, 3, 0.3, c, 0, 1.5, 0); bx(g, B + 0.02, 0.16, 0.34, 0x6b4a2e, 0, 2.92, 0); bx(g, 0.16, 3, 0.34, 0x6b4a2e, -HB + 0.08, 1.5, 0); break;
     case 'window':
@@ -129,7 +131,7 @@ export class Building {
     for (let gx = g0; gx <= g1; gx++) for (let gz = h0; gz <= h1; gz++) {
       const k = gx + ',' + gz, list = this.meshes.get(k); if (!list) continue;
       const [cx, cz] = cellCenter(gx, gz);
-      for (const m of list) { const t = m.userData.type; if (['door', 'chest', 'bench', 'campfire', 'hearth', 'bankchest'].includes(t)) out.push({ k, i: m.userData.i, type: t, x: cx, z: cz, y: m.userData.y, d: Math.hypot(cx - x, cz - z), mesh: m }); }
+      for (const m of list) { const t = m.userData.type; if (['door', 'chest', 'bench', 'campfire', 'hearth', 'bankchest', 'bed'].includes(t)) out.push({ k, i: m.userData.i, type: t, x: cx, z: cz, y: m.userData.y, d: Math.hypot(cx - x, cz - z), mesh: m }); }
     }
     return out;
   }

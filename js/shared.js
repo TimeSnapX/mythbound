@@ -457,6 +457,7 @@ export const PIECES = {
   campfire: { name: 'Campfire', icon: '🍳', cost: { log: 2, stone: 1 }, h: 0.5, color: 0x6a6a6a, top: false, solid: false },
   anchor: { name: 'Grapple Anchor', icon: '⚓', cost: { grapple_anchor: 1 }, alt: { steel_anchor: 1 }, h: 3.2, color: 0x6b4a2e, top: false },
   hearth: { name: 'Hearthstone', icon: '💠', cost: { stone: 5, lantern_oil: 1 }, h: 1.6, color: 0x7a8aa0, top: false, plot: 1 },
+  bed: { name: 'Bed', icon: '🛏', cost: { bed_kit: 1 }, h: 0.6, color: 0x9a6a3c, top: false },
   bankchest: { name: 'Bank Chest', icon: '🏦', cost: { plank: 6, iron_bar: 2 }, h: 1.0, color: 0x5a4a8a, top: false, plot: 1 },
 };
 export const PIECE_ORDER = Object.keys(PIECES);
@@ -661,6 +662,9 @@ export const ENEMY_TYPES = {
   vael: { name: 'Vael the Unwriter', hp: 48, speed: 2.6, aggro: 24, range: 9, tell: 1.2, dmg: 3, cool: 1.1, xp: 12000, radius: 1.2, respawn: 0, leash: 60, ai: 'phased', look: 'vael', boss: true, finale: 1,
     moves: [['volley', 'lines'], ['lines', 'nova', 'summon', 'volley'], ['lines', 'nova', 'volley', 'summon', 'lines']], proj: 0xc080ff, minion: 'inkwisp', unblockLines: 1 },
 };
+// v3.1 cave mini-bosses
+ENEMY_TYPES.mirematron = { name: 'Mire Matriarch (cave mini-boss)', hp: 36, speed: 2.2, aggro: 11, range: 3.0, tell: 1.0, dmg: 3, cool: 1.9, xp: 2600, radius: 1.3, respawn: 240, leash: 12, ai: 'grubkin', tint: 0x6a8a3a, scale: 1.9, elite: 1, poison: 1, mini: 1 };
+ENEMY_TYPES.tidecaptain = { name: 'Drowned Captain (cave mini-boss)', hp: 34, speed: 2.4, aggro: 11, range: 2.9, tell: 0.9, dmg: 3, cool: 1.7, xp: 2800, radius: 1.2, respawn: 240, leash: 12, ai: 'grubkin', tint: 0x3a7a8a, scale: 1.8, elite: 1, slow: 1, mini: 1 };
 ENEMY_TYPES.player = { name: 'Player', hp: 20, speed: 0, aggro: 0, range: 0, tell: 0, dmg: 0, cool: 1, xp: 0, radius: 0.5, respawn: 0, leash: 0, pvp: 1 };
 let _spawns = null;
 export function generateEnemySpawns() {
@@ -715,6 +719,7 @@ export function generateEnemySpawns() {
   reg('bogwitch', 4, 'swamp', S.x - 10, S.z, 55, 0.3); reg('frog', 6, 'swamp', S.x, S.z, 60, 0.2);
   reg('pirate', 4, 'coast', C.x + 10, C.z + 25, 45); reg('crab', 5, 'coast', C.x, C.z + 10, 60, 0.4, 3);
   ring('shade', 4, 40, 80);
+  for (const c of CAVES) { out.push({ id: c.boss + '_0', type: c.boss, x: c.x, z: c.z }); out.push({ id: c.minion + '_c' + c.id, type: c.minion, x: c.x + 2.5, z: c.z - 2 }); }
   return (_spawns = out);
 }
 
@@ -1063,7 +1068,7 @@ Object.assign(ITEMS, {
   seed_potato: { name: 'Potato Seed', icon: '🥔', v: 2, seed: 1 }, seed_pumpkin: { name: 'Pumpkin Seed', icon: '🎃', v: 6, seed: 1 }, sapling_apple: { name: 'Apple Sapling', icon: '🌳', v: 40, seed: 1 }, sapling_ember: { name: 'Emberwood Sapling', icon: '🌲', v: 90, seed: 1 },
   potato: { name: 'Potato', icon: '🥔', v: 4, heal: 1 }, pumpkin: { name: 'Pumpkin', icon: '🎃', v: 10, heal: 3 }, apple: { name: 'Apple', icon: '🍎', v: 6, heal: 2 },
   compost: { name: 'Compost', icon: '💩', v: 3 },
-  potion_health: { name: 'Health Potion', icon: '❤️', v: 30, potion: 'health' }, potion_stamina: { name: 'Stamina Potion', icon: '💛', v: 30, potion: 'stamina' },
+  potion_health: { name: 'Health Potion', icon: '❤️', v: 30, potion: 'health' }, potion_endurance: { name: 'Endurance Potion', icon: '💛', v: 30, potion: 'endurance' },
   potion_fade: { name: 'Fade-resist Potion', icon: '🌫', v: 45, potion: 'fade' }, potion_attack: { name: 'Attack Potion', icon: '⚔', v: 50, potion: 'attack' },
   potion_defence: { name: 'Defence Potion', icon: '🛡', v: 50, potion: 'defence' }, potion_antipoison: { name: 'Antipoison', icon: '💚', v: 35, potion: 'antipoison' },
   potion_warmth: { name: 'Warmth Potion', icon: '🔥', v: 35, potion: 'warmth' }, potion_cooling: { name: 'Cooling Potion', icon: '🧊', v: 35, potion: 'cooling' },
@@ -1108,11 +1113,14 @@ RECIPES.push(
   R('desert_wrap', 'workbench', 'Wrap Desert Headscarf (cool)', { leather: 1, cactus_water: 2 }, { desert_wrap: 1 }, 8, 300),
   R('waterskin', 'workbench', 'Fill Waterskin', { leather: 1, cactus_water: 2 }, { waterskin: 2 }, 3, 120),
   R('vial', 'workbench', 'Blow Vials of Water ×3', { stone: 1 }, { vial: 3 }, 1, 40),
+  // v3.1: a bed frame (logs + hides) that you place in build mode and sleep in
+  R('bed_kit', 'workbench', 'Build a Bed (logs + hides)', { log: 4, hide: 2 }, { bed_kit: 1 }, 4, 300, { skill: 'crafting' }),
+  R('bed_kit_l', 'workbench', 'Build a Bed (logs + leather)', { log: 4, leather: 1 }, { bed_kit: 1 }, 4, 300, { skill: 'crafting' }),
 );
 // Herblore: mix at any workbench, campfire or the oasis/port apothecary (station 'herb')
 export const POTIONS = {
   health: { item: 'potion_health', level: 1, input: { vial: 1, herb_guam: 1 }, xp: 250, desc: 'Restores 6 hearts' },
-  stamina: { item: 'potion_stamina', level: 5, input: { vial: 1, herb_marrentill: 1 }, xp: 350, desc: 'Endless stamina for 60 s' },
+  endurance: { item: 'potion_endurance', level: 5, input: { vial: 1, herb_marrentill: 1 }, xp: 350, desc: 'No combat stamina cost, +60% stamina regen and cheaper rolls / sprint for 3 min' },
   antipoison: { item: 'potion_antipoison', level: 10, input: { vial: 1, herb_marrentill: 1, cactus_water: 1 }, xp: 450, desc: 'Cures poison, immune 90 s' },
   attack: { item: 'potion_attack', level: 15, input: { vial: 1, herb_sunleaf: 1 }, xp: 600, desc: '+1 attack for 90 s' },
   warmth: { item: 'potion_warmth', level: 15, input: { vial: 1, herb_frostbloom: 1, coal: 1 }, xp: 600, desc: 'Keeps the Cold away for 3 min' },
@@ -1171,7 +1179,7 @@ export const COSMETICS = {
 };
 for (const [k, c] of Object.entries(COSMETICS)) ITEMS[k] = { name: c.name, icon: c.icon, v: 0, cosmetic: 1, untradeable: 1 };
 // Trading post (Grand Exchange style): NPC market with a base price, live price drift and NPC liquidity per item
-export const MARKET_ITEMS = ['log', 'plank', 'coal', 'iron_ore', 'iron_bar', 'steel_bar', 'mithril_ore', 'mithril_bar', 'adamant_ore', 'adamant_bar', 'raw_trout', 'trout', 'swordfish', 'hide', 'leather', 'feather', 'fire_shard', 'air_rune', 'fire_rune', 'fade_rune', 'herb_guam', 'herb_marrentill', 'herb_ranarr', 'herb_sunleaf', 'herb_bloodmoss', 'potion_health', 'potion_stamina', 'potion_antipoison', 'uncut_emerald', 'uncut_diamond', 'bomb', 'steel_arrow'];
+export const MARKET_ITEMS = ['log', 'plank', 'coal', 'iron_ore', 'iron_bar', 'steel_bar', 'mithril_ore', 'mithril_bar', 'adamant_ore', 'adamant_bar', 'raw_trout', 'trout', 'swordfish', 'hide', 'leather', 'feather', 'fire_shard', 'air_rune', 'fire_rune', 'fade_rune', 'herb_guam', 'herb_marrentill', 'herb_ranarr', 'herb_sunleaf', 'herb_bloodmoss', 'potion_health', 'potion_endurance', 'potion_antipoison', 'uncut_emerald', 'uncut_diamond', 'bomb', 'steel_arrow'];
 // Daily / weekly tasks (3 dailies + 2 weeklies drawn from these; seeded by the day / week so they're stable all day)
 export const TASK_POOL = [
   { id: 'kill', kind: 'kill', n: [8, 15], name: (n) => `Defeat ${n} enemies`, xp: 'combat' },
@@ -1189,3 +1197,65 @@ export const TASK_POOL = [
 ];
 export const TASK_REWARD = { daily: { coins: 120, xp: 1500 }, weekly: { coins: 600, xp: 8000 } };
 export const STREAK_BONUS = (streak) => 1 + Math.min(0.5, 0.1 * Math.max(0, streak - 1)); // +10%/day of streak, max +50%
+
+// ======================================================================================================
+// v3.1 tuning tables (fishing, stamina, armour by attack type, trading post tiers, pet swap, sleep)
+// ======================================================================================================
+Object.assign(ITEMS, { bed_kit: { name: 'Bed (place in build mode)', icon: '🛏', v: 60 } });
+// Fishing: a spot gives FISH_SPOT.min..max catches, then goes quiet for respawn[0]..respawn[1] seconds.
+// After each catch you keep fishing automatically until the spot is empty, your bag is full or you move.
+export const FISH_SPOT = { min: 4, max: 7, respawn: [20, 40] };
+// Combat stamina (0-100 bar, regen 30/s). Small costs, never a lockout: attacks still work at 0 stamina.
+export const STAM = { swing: 4, shot: 4, spell: 4, pause: 1.0, reserve: 22, roll: 22, rollMin: 10, regen: 30,
+  endurance: { secs: 180, regenMult: 1.6, roll: 14, sprintMult: 0.55 } };
+// Armour: each piece has defence per attack type = item def x material multiplier.
+// Hit reduction = 2% per point of that type (capped at 60%), rounded to the nearest quarter heart, minimum 1/4 heart.
+export const ARMOUR_MATERIAL = {
+  //            melee  ranged  magic   (multipliers on the item's def)
+  leather:   { melee: 1.0, ranged: 1.8, magic: 1.4 },   // light: good vs arrows
+  cloth:     { melee: 0.6, ranged: 0.8, magic: 2.0 },   // fur hood / desert wrap: warding cloth
+  bronze:    { melee: 1.2, ranged: 0.9, magic: 0.45 },  // heavy plate: strong vs melee, weak vs magic
+  iron:      { melee: 1.2, ranged: 0.9, magic: 0.45 },
+  steel:     { melee: 1.2, ranged: 0.95, magic: 0.5 },
+  mithril:   { melee: 1.15, ranged: 1.0, magic: 0.75 },  // light elven metal: more even
+  adamant:   { melee: 1.3, ranged: 1.0, magic: 0.5 },
+  shield:    { melee: 1.2, ranged: 1.4, magic: 0.6 },   // any shield (blocking is separate)
+};
+export const ARMOUR_PCT_PER_POINT = 0.02, ARMOUR_CAP = 0.6;
+const matOf = (k, g) => g.slot === 'shield' ? 'shield' : k.startsWith('leather') ? 'leather' : (k === 'fur_hood' || k === 'desert_wrap') ? 'cloth' : (k.split('_')[0] in ARMOUR_MATERIAL ? k.split('_')[0] : 'leather');
+for (const [k, g] of Object.entries(GEAR)) if (['head', 'body', 'legs', 'shield'].includes(g.slot) && typeof g.def === 'number') {
+  const m = ARMOUR_MATERIAL[matOf(k, g)]; g.mat = matOf(k, g);
+  g.defs = { melee: +(g.def * m.melee).toFixed(1), ranged: +(g.def * m.ranged).toFixed(1), magic: +(g.def * m.magic).toFixed(1) };
+}
+export const ARMOUR_TABLE = Object.entries(GEAR).filter(([, g]) => g.defs).map(([k, g]) => ({ id: k, name: g.name, slot: g.slot, mat: g.mat, def: g.def, ...g.defs }));
+export function armourReduce(dmg, defPts) { const r = Math.min(ARMOUR_CAP, Math.max(0, defPts) * ARMOUR_PCT_PER_POINT); return Math.max(0.5, Math.round(dmg * (1 - r) * 2) / 2); }
+// Trading post: grade tiers unlock by combat level OR total level; higher tiers cost more.
+export const MARKET_TIER_REQ = [
+  { combat: 1, total: 0, mult: 1 },        // tier 0: basics
+  { combat: 15, total: 150, mult: 1.15 },  // tier 1: steel, emeralds, swordfish
+  { combat: 25, total: 250, mult: 1.4 },   // tier 2: mithril, diamonds, ranarr
+  { combat: 35, total: 350, mult: 1.8 },   // tier 3: adamant
+];
+export const MARKET_TIER = { steel_bar: 1, steel_arrow: 1, swordfish: 1, uncut_emerald: 1, potion_antipoison: 1, fade_rune: 1, herb_sunleaf: 1, steel_helm: 1, steel_body: 1, steel_legs: 1,
+  mithril_ore: 2, mithril_bar: 2, uncut_diamond: 2, herb_ranarr: 2, herb_bloodmoss: 2, mithril_helm: 2, mithril_body: 2,
+  adamant_ore: 3, adamant_bar: 3, adamant_helm: 3, adamant_body: 3 };
+for (const k of ['steel_helm', 'steel_body', 'steel_legs', 'mithril_helm', 'mithril_body', 'adamant_helm', 'adamant_body']) if (!MARKET_ITEMS.includes(k)) MARKET_ITEMS.push(k);
+export const PET_SWAP_COST = 1000;
+export const SLEEP = { enemyRadius: 20, wakeTod: 0.04 };
+
+// v3.1 caves: one small cave per Mirewood Swamp and Starfall Coast (ring of rock, a mini-boss and a loot chest).
+// Placed deterministically on dry, fairly flat ground inside each region.
+function caveSpot(k, a0) {
+  const R = REGIONS[k];
+  for (let i = 0; i < 400; i++) { const a = a0 + i * 0.37, r = R.r * (0.35 + (i % 7) * 0.06), x = R.x + Math.cos(a) * r, z = R.z + Math.sin(a) * r; const h = terrainHeight(x, z);
+    if (h < 0.9 || h > 8) continue; let ok = true; for (let j = 0; j < 8 && ok; j++) { const b = j * Math.PI / 4, hh = terrainHeight(x + Math.cos(b) * 8, z + Math.sin(b) * 8); if (hh < 0.5 || Math.abs(hh - h) > 2.2) ok = false; }
+    if (ok && regionAt(x, z) === k) return { x: +x.toFixed(1), z: +z.toFixed(1) }; }
+  return { x: R.x, z: R.z };
+}
+export const CAVES = [
+  { id: 'mire', region: 'swamp', name: 'Mire Hollow', boss: 'mirematron', minion: 'frog', ...caveSpot('swamp', 2.4), light: 0x80ff90, loot: [['herb_bloodmoss', 2], ['uncut_emerald', 1], ['potion_antipoison', 2], ['mithril_ore', 4]], gold: [120, 200] },
+  { id: 'grotto', region: 'coast', name: "Wreckers' Grotto", boss: 'tidecaptain', minion: 'crab', ...caveSpot('coast', 0.8), light: 0x70d0ff, loot: [['raw_swordfish', 3], ['uncut_diamond', 1], ['steel_arrow', 20], ['adamant_ore', 2]], gold: [140, 230] },
+];
+LOOT.mirematron = { gold: [40, 70], items: [['herb_bloodmoss', 0.6, 1], ['uncut_emerald', 0.25, 1], ['mithril_ore', 0.5, 2]] };
+LOOT.tidecaptain = { gold: [45, 80], items: [['raw_swordfish', 0.6, 2], ['uncut_diamond', 0.15, 1], ['steel_arrow', 0.6, 8]] };
+export const CAVE_LOOT_COOLDOWN = 30 * 60 * 1000;

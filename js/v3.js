@@ -227,7 +227,7 @@ const V3 = {
   },
   v3Action(a, arg, e) {
     switch (a) {
-      case 'close-wn': this.settings.seenV3 = true; this.saveSettings(); UI.show('#whatsnew', false); return;
+      case 'close-wn': this.settings.seenV3 = true; this.settings.seenV31 = true; this.saveSettings(); UI.show('#whatsnew', false); return;
       case 'close-act1': UI.show('#act1', false); return;
       case 'travel': return this.fastTravel(arg);
       case 'tab': return this.openPanel(arg);
@@ -303,7 +303,7 @@ const V3 = {
     this.denWolf.visible = !s.mounts.wolf && !this.inDungeon;
     this.v3T = (this.v3T || 0) + dt;
     if (this.v3T > 1) { this.v3T = 0; this.tasksEnsure(); this.checkAch(); this.v3Hud(); this.marketTick(); }
-    if (!this.settings.seenV3 && !this.wnShown && this.t > 1.5 && !this.inDialog && !UI.panelOpen()) this.showWhatsNew();
+    if ((!this.settings.seenV3 || !this.settings.seenV31) && !this.wnShown && this.t > 1.5 && !this.inDialog && !UI.panelOpen()) this.showWhatsNew();
     const I = this.input, blocked = this.inDialog || this.fading;
     if (!blocked) { if (I.wasPressed('map')) this.togglePanel('map'); if (I.wasPressed('tasks')) this.togglePanel('tasks'); if (I.wasPressed('mount')) this.toggleMount(); if (I.wasPressed('pvp')) this.togglePanel('pvp'); }
   },
@@ -824,7 +824,7 @@ const V3 = {
     const L = st.layout || {};
     for (const id of this.layoutTargets()) {
       const e = document.getElementById(id); if (!e) continue; const q = L[id];
-      if (q) { e.style.setProperty('position', 'fixed', 'important'); e.style.left = Math.round(q.x * innerWidth) + 'px'; e.style.top = Math.round(q.y * innerHeight) + 'px'; e.style.right = 'auto'; e.style.bottom = 'auto'; e.classList.add('placed'); }
+      if (q) { e.style.setProperty('position', 'fixed', 'important'); e.style.left = Math.round(q.x * innerWidth) + 'px'; e.style.top = Math.round(q.y * innerHeight) + 'px'; e.style.right = 'auto'; e.style.bottom = 'auto'; e.classList.add('placed'); const r = e.getBoundingClientRect(); /* v3.1: clamp by the rendered (scaled) size, also after rotation */ if (r.right > innerWidth) e.style.left = Math.max(0, parseFloat(e.style.left) - (r.right - innerWidth)) + 'px'; if (r.bottom > innerHeight) e.style.top = Math.max(0, parseFloat(e.style.top) - (r.bottom - innerHeight)) + 'px'; if (r.left < 0) e.style.left = (parseFloat(e.style.left) - r.left) + 'px'; if (r.top < 0) e.style.top = (parseFloat(e.style.top) - r.top) + 'px'; }
       else if (e.classList.contains('placed')) { e.style.removeProperty('position'); e.style.left = e.style.top = e.style.right = e.style.bottom = ''; e.classList.remove('placed'); }
     }
   },
@@ -837,7 +837,7 @@ const V3 = {
       if (!this._layoutH) {
         let drag = null;
         const down = (e) => { if (!this.layoutEditing) return; const t = e.target.closest('#joy, #tbtns button, #tbtns2 button'); if (!t) return; e.preventDefault(); e.stopPropagation(); const r = t.getBoundingClientRect(); drag = { el: t, dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId }; t.classList.add('dragging'); };
-        const move = (e) => { if (!drag || e.pointerId !== drag.id) return; e.preventDefault(); e.stopPropagation(); const el = drag.el, w = el.offsetWidth, h = el.offsetHeight; const x = Math.max(0, Math.min(innerWidth - w, e.clientX - drag.dx)), y = Math.max(0, Math.min(innerHeight - h, e.clientY - drag.dy)); (this.settings.layout ||= {})[el.id] = { x: +(x / innerWidth).toFixed(4), y: +(y / innerHeight).toFixed(4) }; this.v3ApplyLayout(); };
+        const move = (e) => { if (!drag || e.pointerId !== drag.id) return; e.preventDefault(); e.stopPropagation(); const el = drag.el, w = el.getBoundingClientRect().width, h = el.getBoundingClientRect().height; const x = Math.max(0, Math.min(innerWidth - w, e.clientX - drag.dx)), y = Math.max(0, Math.min(innerHeight - h, e.clientY - drag.dy)); (this.settings.layout ||= {})[el.id] = { x: +(x / innerWidth).toFixed(4), y: +(y / innerHeight).toFixed(4) }; this.v3ApplyLayout(); };
         const up = (e) => { if (!drag || e.pointerId !== drag.id) return; e.stopPropagation(); drag.el.classList.remove('dragging'); drag = null; this.saveSettings(); };
         root.addEventListener('pointerdown', down, true); addEventListener('pointermove', move, true); addEventListener('pointerup', up, true);
         this._layoutH = true;

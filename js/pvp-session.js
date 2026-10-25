@@ -372,7 +372,7 @@ const PvP = {
     const H = this.pvHost(), op = String(m.op || ''), id = typeof m.id === 'string' ? m.id.slice(0, 20) : '';
     const T = H.trades.get(id), side = T ? (T.a === uid ? 'a' : T.b === uid ? 'b' : null) : null;
     const rej = (reason) => { H.rejects['trade-' + reason] = (H.rejects['trade-' + reason] || 0) + 1; H.log.push({ uid, reason: 'trade-' + reason }); this.trTo(uid, { op: 'reject', reason }); };
-    const view = (t) => { for (const u of [t.a, t.b]) this.trTo(u, { op: 'view', v: { id: t.id, a: t.a, b: t.b, names: [this.pvName(t.a), this.pvName(t.b)], offers: t.offers, ver: t.ver, acc: t.acc, state: t.state } }); };
+    const view = (t) => { for (const u of [t.a, t.b]) this.trTo(u, { op: 'view', v: { id: t.id, a: t.a, b: t.b, names: [this.pvName(t.a), this.pvName(t.b)], offers: t.offers, ver: t.ver, acc: t.acc, fin: t.fin || {}, state: t.state } }); };
     switch (op) {
       case 'req': {
         const to = typeof m.to === 'string' ? m.to.slice(0, 40) : '', A = this.pvSt(uid), B = this.pvSt(to);
@@ -385,11 +385,19 @@ const PvP = {
       case 'offer': {
         if (!T || !side || T.state !== 'open') return rej('not-open');
         const items = {}; let n = 0;
-        for (const [k, v] of Object.entries(m.items || {})) {
-          const c = Math.floor(Number(v)); if (!(c > 0)) continue;
-          if (k === 'gold') { items.gold = Math.min(c, 1e9); continue; }
-          if (!tradeable(k)) return rej('untradeable');
-          if (++n > TRADE_MAX_STACKS) return rej('too-many'); items[k] = Math.min(c, 1e6);
+        const src = m.items && typeof m.items === 'object' && !Array.isArray(m.items) ? m.items : {};
+        const mineHost = uid === this.myUid(), have = mineHost ? { ...this.s.inv, gold: this.s.gold } : (m.have && typeof m.have === 'object' ? m.have : null);
+        for (const k of Object.keys(src)) {
+          const v = src[k];
+          if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 1e9) return rej('bad-qty'); // v3.1: no NaN, fractions, strings or negatives
+          if (!v) continue;
+          if (k === 'arena_token' || k === 'tokens') return rej('untradeable');
+          if (k !== 'gold' && (!Object.prototype.hasOwnProperty.call(ITEMS, k) || !tradeable(k))) return rej('untradeable');
+          if (k !== 'gold' && v > 1e6) return rej('bad-qty');
+          const h = have ? Number(have[k]) : NaN;
+          if (!(Number.isFinite(h) && h >= v)) return rej('not-owned'); // v3.1: the item / coins must be in the offerer's bag
+          if (k === 'gold') { items.gold = v; continue; }
+          if (++n > TRADE_MAX_STACKS) return rej('too-many'); items[k] = v;
         }
         T.offers[side] = items; T.ver++; T.acc = {}; view(T); return;
       }
@@ -397,7 +405,14 @@ const PvP = {
         if (!T || !side || T.state !== 'open') return rej('not-open');
         if (m.ver !== T.ver) return rej('stale-version');
         T.acc[side] = T.ver; view(T);
-        if (T.acc.a === T.ver && T.acc.b === T.ver) { T.state = 'escrow'; for (const s2 of ['a', 'b']) this.trTo(T[s2], { op: 'escrow', id: T.id, ver: T.ver, give: T.offers[s2] }); view(T); }
+        if (T.acc.a === T.ver && T.acc.b === T.ver) { T.state = 'final'; T.fin = {}; view(T); } // v3.1: both accepted -> final review screen
+        return;
+      }
+      case 'final': {
+        if (!T || !side || T.state !== 'final') return rej('not-final');
+        if (m.ver !== T.ver) return rej('stale-version');
+        T.fin[side] = T.ver; view(T);
+        if (T.fin.a === T.ver && T.fin.b === T.ver) { T.state = 'escrow'; for (const s2 of ['a', 'b']) this.trTo(T[s2], { op: 'escrow', id: T.id, ver: T.ver, give: T.offers[s2] }); view(T); }
         return;
       }
       case 'escrowed': case 'escrowFail': {
@@ -410,7 +425,7 @@ const PvP = {
       }
       case 'cancel': {
         if (!T || !side) return rej('no-trade');
-        if (T.state === 'open') { T.state = 'cancelled'; view(T); return; }
+        if (T.state === 'open' || T.state === 'final') { T.state = 'cancelled'; view(T); return; }
         if (T.state === 'escrow') { T.state = 'cancelled'; for (const s2 of ['a', 'b']) if (T.esc[s2] === 'ok') this.trTo(T[s2], { op: 'refund', id: T.id }); view(T); return; }
         return rej('too-late');
       }
@@ -423,7 +438,7 @@ const PvP = {
   },
   tradeHostFrame(now) {
     const H = this.pvH; if (!H) return;
-    for (const t of H.trades.values()) if ((t.state === 'open' || t.state === 'escrow') && (now - t.t0 > TRADE_TTL || !this.pvSt(t.a) || !this.pvSt(t.b))) {
+    for (const t of H.trades.values()) if ((t.state === 'open' || t.state === 'final' || t.state === 'escrow') && (now - t.t0 > TRADE_TTL || !this.pvSt(t.a) || !this.pvSt(t.b))) {
       const was = t.state; t.state = 'cancelled';
       if (was === 'escrow') for (const s2 of ['a', 'b']) if (t.esc[s2] === 'ok') this.trTo(t[s2], { op: 'refund', id: t.id });
       for (const u of [t.a, t.b]) this.trTo(u, { op: 'view', v: { id: t.id, state: 'cancelled', a: t.a, b: t.b, names: [], offers: t.offers, ver: t.ver, acc: {} } });
@@ -440,14 +455,14 @@ const PvP = {
         if (!this.trade && this.panelKind === 'trade') this.closePanel();
         return;
       }
-      case 'reject': (this.pvp.tradeRejects ||= []).push(m.reason); UI.toast({ untradeable: "That item can't be traded.", 'stale-version': 'The offer changed. Check it and confirm again.', busy: 'Already trading.', 'too-far': 'Stand next to them to trade.', 'too-many': 'Max 8 stacks per trade.' }[m.reason] || 'Trade: ' + m.reason, 'bad'); return;
+      case 'reject': (this.pvp.tradeRejects ||= []).push(m.reason); UI.toast({ untradeable: "That item can't be traded.", 'stale-version': 'The offer changed. Check it and confirm again.', busy: 'Already trading.', 'too-far': 'Stand next to them to trade.', 'too-many': 'Max 8 stacks per trade.', 'not-owned': "You don't have that many.", 'bad-qty': 'Invalid amount.' }[m.reason] || 'Trade: ' + m.reason, 'bad'); return;
       case 'escrow': {
         const give = m.give || {}, id = String(m.id);
         if (s.escrow[id] || s.tradeIds.includes(id)) return; // never escrow twice for one trade
         const okAll = Object.entries(give).every(([k, n]) => (k === 'gold' ? s.gold >= n : (s.inv[k] || 0) >= n && tradeable(k)));
         if (!okAll) return this.tradeSend({ op: 'escrowFail', id });
         for (const [k, n] of Object.entries(give)) { if (k === 'gold') s.gold -= n; else { s.inv[k] -= n; if (s.inv[k] <= 0) delete s.inv[k]; } }
-        s.escrow[id] = { give, t: Date.now() }; this.save();
+        s.escrow[id] = { give, t: Date.now() }; { const t = this.trade, me = this.tradeMySide(); this.tradeLast = { id, give: { ...give }, with: t ? t.names[me === 'a' ? 1 : 0] : 'friend' }; } this.save();
         return this.tradeSend({ op: 'escrowed', id });
       }
       case 'deliver': {
@@ -456,6 +471,7 @@ const PvP = {
         s.tradeIds.push(id); if (s.tradeIds.length > 200) s.tradeIds.shift();
         delete s.escrow[id];
         for (const [k, n] of Object.entries(m.get || {})) { const c = Math.max(0, Math.floor(n)); if (!c) continue; if (k === 'gold') s.gold += c; else if (ITEMS[k] && tradeable(k)) s.inv[k] = (s.inv[k] || 0) + c; }
+        { const T0 = this.tradeLast?.id === id ? this.tradeLast : null, esc0 = T0 ? T0.give : {}; (s.tradeLog ||= []).unshift({ id, at: Date.now(), with: T0?.with || 'friend', gave: esc0 || {}, got: { ...(m.get || {}) } }); if (s.tradeLog.length > 50) s.tradeLog.length = 50; }
         s.stats.trades = (s.stats.trades || 0) + 1; this.trade = null; if (this.panelKind === 'trade') this.closePanel();
         UI.banner('🤝 Trade complete', ''); this.audio.play('coin'); this.checkAch(); this.save(); return;
       }
@@ -467,7 +483,7 @@ const PvP = {
       case 'msg': UI.toast(String(m.text || '').slice(0, 120), ''); return;
     }
   },
-  tradeOffer(items) { if (!this.trade) return; this.tradeSend({ op: 'offer', id: this.trade.id, items }); },
+  tradeOffer(items) { if (!this.trade) return; const have = { gold: this.s.gold }; for (const k of Object.keys(items)) if (k !== 'gold') have[k] = this.s.inv[k] || 0; this.tradeSend({ op: 'offer', id: this.trade.id, items, have }); },
   tradeMySide() { const t = this.trade; return t ? (t.a === this.myUid() ? 'a' : 'b') : null; },
   // ---------- panels ----------
   pvpPanel(kind) {
@@ -516,12 +532,17 @@ const PvP = {
     const list = (o) => Object.entries(o).map(([k, n]) => `<li>${k === 'gold' ? '🪙' : ITEMS[k]?.icon || ''} ${n}× ${k === 'gold' ? 'coins' : esc(ITEMS[k]?.name || k)}</li>`).join('') || '<li class="sub">nothing</li>';
     const bag = Object.entries(this.s.inv).filter(([k, n]) => n > 0 && tradeable(k)).map(([k, n]) => `<button class="slot" data-v3="trade-add" data-arg="${k}" title="${esc(ITEMS[k].name)}">${ITEMS[k].icon}<small>${n - (mine[k] || 0)}</small></button>`).join('');
     const accMe = t.acc[me] === t.ver, accThem = t.acc[other] === t.ver;
+    if (t.state === 'final' || (t.state === 'escrow' && t.fin)) { const fm = t.fin?.[me] === t.ver, ft = t.fin?.[other] === t.ver;
+      return `<h2>🤝 Final check <small>offer v${t.ver}</small></h2><div class="trade-confirm"><p class="sub">Both of you accepted. Look over both sides one last time. Nothing moves until you both press <b>Complete trade</b>.</p>
+      <table><tr><td><h3 class="jsec">You give ${fm ? '✅' : ''}</h3><ul>${list(mine)}</ul></td><td><h3 class="jsec">${esc(t.names[other === 'a' ? 0 : 1] || 'Friend')} gives ${ft ? '✅' : ''}</h3><ul>${list(theirs)}</ul></td></tr></table>
+      <div class="row"><button class="primary" data-v3="trade-final" ${fm || t.state !== 'final' ? 'disabled' : ''}>Complete trade</button><button data-v3="trade-cancel">Cancel</button></div></div>`; }
     return `<h2>🤝 Trade with ${esc(t.names[other === 'a' ? 0 : 1] || 'friend')} <small>${t.state === 'escrow' ? 'completing…' : `offer v${t.ver}`}</small></h2>
       <div class="jcols"><div><h3 class="jsec">You give ${accMe ? '✅' : ''}</h3><ul>${list(mine)}</ul><button data-v3="trade-clear">Clear</button> <button data-v3="trade-gold">+100 🪙</button></div>
       <div><h3 class="jsec">You get ${accThem ? '✅' : ''}</h3><ul>${list(theirs)}</ul></div></div>
       <p class="sub">Click items to add them. Any change resets both confirmations. Quest items, tokens and cosmetics can't be traded.</p><div class="bag tradebag">${bag}</div>
-      <div class="row"><button class="primary" data-v3="trade-accept" ${accMe || t.state !== 'open' ? 'disabled' : ''}>Confirm trade</button><button data-v3="trade-cancel">Cancel</button></div>`;
+      <div class="row"><button class="primary" data-v3="trade-accept" ${accMe || t.state !== 'open' ? 'disabled' : ''}>Confirm trade</button><button data-v3="trade-cancel">Cancel</button></div>${this.tradeLogHtml()}`;
   },
+  tradeLogHtml() { const L = (this.s.tradeLog || []).slice(0, 8); if (!L.length) return ''; const f = (o) => Object.entries(o || {}).map(([k, n]) => `${n}× ${k === 'gold' ? '🪙' : ITEMS[k]?.icon || ''}${k === 'gold' ? '' : ' ' + esc(ITEMS[k]?.name || k)}`).join(', ') || 'nothing'; return `<h3 class="jsec">📜 Trade history</h3><ul class="tradelog">${L.map((r) => `<li><small>${new Date(r.at).toLocaleString('en-AU')}</small> with <b>${esc(r.with)}</b>: gave ${f(r.gave)} · got ${f(r.got)}</li>`).join('')}</ul>`; },
   pvpAction(a, arg) {
     const val = (id) => document.getElementById(id);
     switch (a) {
@@ -536,6 +557,7 @@ const PvP = {
       case 'trade-gold': { const t = this.trade; if (!t) return; const me = this.tradeMySide(), o = { ...(t.offers[me] || {}) }; o.gold = Math.min(this.s.gold, (o.gold || 0) + 100); return this.tradeOffer(o); }
       case 'trade-clear': return this.tradeOffer({});
       case 'trade-accept': if (this.trade) this.tradeSend({ op: 'accept', id: this.trade.id, ver: this.trade.ver }); return;
+      case 'trade-final': if (this.trade) this.tradeSend({ op: 'final', id: this.trade.id, ver: this.trade.ver }); return;
       case 'trade-cancel': if (this.trade) this.tradeSend({ op: 'cancel', id: this.trade.id }); this.trade = null; return this.closePanel();
     }
   },

@@ -2,6 +2,7 @@ rules_version = '2';
 // Mythbound cloud saves. Each player can read/write only their own documents at users/{uid}/saves/{main|backup}.
 // v2.2 adds co-op lobby signaling under /lobbies (below the save rules, which are unchanged).
 // v3.0 adds the arena season leaderboard under /seasons (save, lobby and relay rules unchanged).
+// v3.1 adds anti-farming to /seasons/{season}/players/{uid} (field 'farm': first 3 results per opponent per UTC day count).
 service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid}/saves/{slot} {
@@ -125,12 +126,30 @@ service cloud.firestore {
       match /players/{uid} {
         function claimId() { return request.resource.data.lastMatch + '_' + uid; }
         function prev(k, d) { return resource == null ? d : resource.data[k]; }
+        // v3.1 anti-farming: the first 3 ranked results per opponent (key = the other side's uids joined by '+')
+        // per UTC day count; after that wins, losses and rating must stay unchanged (matches still +1).
+        function oppKey(mt) {
+          return mt.players.size() == 2 ? (mt.players[0] == uid ? mt.players[1] : mt.players[0])
+            : ((mt.players[0] == uid || mt.players[1] == uid) ? mt.players[2] + '+' + mt.players[3] : mt.players[0] + '+' + mt.players[1]);
+        }
+        function today() { return int(request.time.toMillis() / 86400000); }
+        function prevFarm() { return (resource != null && 'farm' in resource.data && resource.data.farm.day == today()) ? resource.data.farm.n : {}; }
+        function prevN(k) { return k in prevFarm() ? prevFarm()[k] : 0; }
+        function farmOk(d, k) {
+          return d.farm is map && d.farm.keys().hasOnly(['day', 'n']) && d.farm.day == today() && d.farm.n is map && d.farm.n.size() <= 30
+            && d.farm.n[k] == prevN(k) + 1
+            && d.farm.n.diff(prevFarm()).affectedKeys().hasOnly([k]);
+        }
         function validRow() {
           let d = request.resource.data;
           let mt = m(d.lastMatch);
-          let won = mt.winners.hasAny([uid]);
+          let k = oppKey(mt);
+          let full = prevN(k) < 3;
+          let won = mt.winners.hasAny([uid]) && full;
           return sid() && request.auth.uid == uid
-            && d.keys().hasOnly(['uid', 'name', 'wins', 'losses', 'matches', 'rating', 'lastMatch', 'updatedAt'])
+            && d.keys().hasOnly(['uid', 'name', 'wins', 'losses', 'matches', 'rating', 'lastMatch', 'updatedAt', 'farm'])
+            && farmOk(d, k)
+            && (full || (d.losses == prev('losses', 0) && d.rating == prev('rating', 1000)))
             && d.uid == uid && d.name is string && d.name.size() <= 16 && d.updatedAt == request.time
             && d.lastMatch is string
             && !exists(/databases/$(database)/documents/seasons/$(season)/claims/$(claimId()))

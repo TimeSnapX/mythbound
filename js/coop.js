@@ -140,7 +140,7 @@ export class Coop {
     if (this.joinedPeers.length >= N.MAX_PLAYERS - 1) { this.sendTo(peer, { t: 'full' }); setTimeout(() => peer.link?.close('full'), 400); return; }
     const g = this.g, p = g.p;
     peer.name = N.cleanText(m.name, 16) || peer.name; peer.look = lookOf(m.look);
-    peer.mhp = N.clamp(N.num(m.mhp, 6) | 0, 2, 40); peer.hp = N.clamp(N.num(m.hp, peer.mhp) | 0, 0, peer.mhp);
+    peer.mhp = N.clamp(N.num(m.mhp, 6) | 0, 2, 40); peer.hp = N.clamp(Math.round(N.num(m.hp, peer.mhp) * 2) / 2, 0, peer.mhp);
     const h = m.hearth; peer.hearth = h && Number.isFinite(h.x) && Number.isFinite(h.z) && inWorldBounds(h.x, h.z) ? { x: h.x, z: h.z } : null;
     // guests arrive next to the host
     const a = Math.random() * 6.28, sx = p.x + Math.sin(a) * 2.2, sz = p.z + Math.cos(a) * 2.2;
@@ -151,7 +151,7 @@ export class Coop {
     this.sendTo(peer, {
       t: 'welcome', id: peer.uid, host: this.me, code: this.code, you: { x: r2(peer.x), y: r2(peer.y), z: r2(peer.z) },
       players: [this.pubHost(), ...this.joinedPeers.filter((q) => q !== peer).map((q) => this.pub(q))],
-      nodes: [...g.world.nodes.values()].filter((n) => n.depleted).map((n) => n.id),
+      nodes: [...g.world.nodes.values()].filter((n) => n.depleted).map((n) => n.id), tod: g.s.todOff || 0,
       blocks: g.building.serialize(), doors: [...g.building.open], e: this.enemyRows(peer.x, peer.z), puzzle: this.puzzle(), perms: { build: this.allowBuild }, plot: g.s.home?.plot || null, max: N.MAX_PLAYERS,
     });
     this.broadcast({ t: 'join', p: this.pub(peer) }, peer);
@@ -187,7 +187,7 @@ export class Coop {
       peer.lastStateT = t; return;
     }
     peer.x = x; peer.y = y; peer.z = z; peer.ry = N.num(m.ry); peer.a = N.cleanText(m.a, 12) || 'idle'; peer.dead = !!m.dead; peer.mounted = !!m.mo; peer.lastStateT = t; peer.has = true;
-    peer.mhp = N.clamp(N.num(m.mhp, peer.mhp) | 0, 2, 40); peer.hp = N.clamp(N.num(m.hp, peer.hp) | 0, 0, peer.mhp);
+    peer.mhp = N.clamp(N.num(m.mhp, peer.mhp) | 0, 2, 40); peer.hp = N.clamp(Math.round(N.num(m.hp, peer.hp) * 2) / 2, 0, peer.mhp);
     if (typeof m.sword === 'string' && /^[a-z]{2,10}$/.test(m.sword) && peer.look && m.sword !== peer.look.sword) { peer.look.sword = m.sword; const r = this.g.remotes.get(peer.uid); r?.av.setSword?.(m.sword); this.broadcast({ t: 'look', id: peer.uid, look: peer.look }, peer); }
     this.g.remoteSample(peer.uid, x, y, z, peer.ry, peer.a, peer.dead);
   }
@@ -390,7 +390,7 @@ export class Coop {
   guestRx(m) {
     const g = this.g;
     switch (m.t) {
-      case 'welcome': if (this.joined) return; this.joined = true; clearInterval(this.timers.hello); this.helloDone?.(); this.timers.ping = setInterval(() => this.tick(), 1000); g.coopEnterHost(m, this); this.setStatus(`Playing in ${this.lobby.hostName || 'a friend'}'s world · ${this.via === 'relay' ? 'via relay' : 'direct link'}`); return;
+      case 'welcome': if (this.joined) return; this.joined = true; g.coopTodOff = N.clamp(N.num(m.tod, 0), 0, 1); clearInterval(this.timers.hello); this.helloDone?.(); this.timers.ping = setInterval(() => this.tick(), 1000); g.coopEnterHost(m, this); this.setStatus(`Playing in ${this.lobby.hostName || 'a friend'}'s world · ${this.via === 'relay' ? 'via relay' : 'direct link'}`); return;
       case 'full': this.setStatus('', `That world is full (${N.MAX_PLAYERS} players).`); return this.leave(true);
       case 'pong': this.ping = Math.max(0, Math.round(now() - N.num(m.c, now()))); return;
       case 'ping': return this.toHost({ t: 'pong', c: N.num(m.c) });
@@ -419,6 +419,7 @@ export class Coop {
       case 'cart': if (g.mine && !g.mine.cart.moving) g.mine.pushCart(); return;
       case 'chat': { const text = N.filterProfanity(N.cleanText(m.text, 200)); UI.chatLine(m.sys ? null : N.cleanText(m.name, 16), text, m.sys ? 'sys' : m.id === this.me ? 'me' : ''); g.messages.push({ ...m, text }); return; }
       case 'emote': if (EMOTES[m.e]) this.showEmote(m.id, m.e); return;
+      case 'tod': g.coopTodOff = N.clamp(N.num(m.off, 0), 0, 1); if (m.by) { g.onCoopSlept?.(N.cleanText(m.by, 16)); } return;
       case 'correct': g.p.x = N.num(m.x, g.p.x); g.p.y = N.num(m.y, g.p.y); g.p.z = N.num(m.z, g.p.z); g.p.vy = 0; return;
       case 'revived': return g.coopRevived(N.cleanText(m.by, 16));
       case 'roster': {
